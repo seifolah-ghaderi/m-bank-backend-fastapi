@@ -1,0 +1,5 @@
+Run `uv run alembic upgrade head` from the repository root with
+MIGRATION_DATABASE_URL set to the schema owner connection. The API uses the
+separate DATABASE_URL runtime connection. See docs/operations.md for grants,
+bootstrap, and preservation requirements. Do not downgrade a database with
+business records you need to retain.

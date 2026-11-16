@@ -1,0 +1,388 @@
+Banking Marketing & Customer Retention Management System
+System Overview
+
+The system is an internal CRM and field marketing platform used by a bank to manage marketing campaigns, customer acquisition, customer retention, POS terminal visits, employee performance, and sales verification.
+
+The application is NOT connected to the Core Banking System.
+
+It only manages marketing operations, customer visits, task assignments, campaign execution, verification, and employee scoring.
+
+Whenever bank information is required (such as account number or purchased product), the information is manually entered by employees and later verified by supervisors using another banking system.
+
+The application consists of three user roles:
+
+Supervisor (Administrator)
+Branch Manager
+Employee (Field Marketer)
+
+The system includes both a web administration panel and a mobile application.
+
+Organizational Structure
+
+The organization consists of:
+
+Cities
+Bank Branches
+Employees
+
+Each employee belongs to exactly one branch.
+
+Each branch belongs to one city.
+
+Each branch has one manager.
+
+The supervisor has access to the entire system.
+
+Branch managers only manage their own branch.
+
+Employees only access tasks assigned to them.
+
+Master Data
+
+The system manages several master data entities.
+
+These include:
+
+Branches
+Cities
+Employees
+Occupations
+Banking Products
+
+Each banking product contains a score value.
+
+The score is used later for employee ranking.
+
+Lead Management
+
+Potential customers (Leads) are imported from Excel files.
+
+Each Lead contains information such as:
+
+First Name
+Last Name
+Mobile Number
+National Code (optional)
+Address
+Occupation
+City
+Referrer
+Additional Information
+
+Each Lead belongs to a specific branch.
+
+A Lead may participate in multiple marketing campaigns over time.
+
+However,
+
+a Lead cannot belong to more than one ACTIVE campaign simultaneously.
+
+Marketing Campaign
+
+A Supervisor creates marketing campaigns.
+
+Each campaign has:
+
+Title
+Start Date
+End Date
+Status
+
+Possible statuses:
+
+Draft
+Active
+Closed
+
+The Supervisor filters Leads using different criteria such as:
+
+City
+Occupation
+Name Search
+
+Selected Leads are automatically assigned to their own branch inside that campaign.
+
+Campaign Execution
+
+Employees open the mobile application and view active campaigns.
+
+Inside a campaign, they see all Leads assigned to their branch.
+
+Employees choose a Lead themselves.
+
+There is no automatic assignment.
+
+Once selected,
+
+the Lead becomes locked for that employee until the process finishes.
+
+Branch Managers may reassign the Lead to another employee if necessary.
+
+Customer Visit
+
+Employees visit the customer.
+
+The visit contains:
+
+Visit Date
+Result
+Description
+Additional Information
+
+Possible results include:
+
+Pending
+Interested
+Not Interested
+No Response
+
+A Lead has one Visit record per Campaign.
+
+If the employee visits again, the same Visit record is updated instead of creating a new Visit.
+
+Product Recommendation
+
+During the visit,
+
+employees may recommend multiple banking products.
+
+If the customer purchases products,
+
+the employee records:
+
+Product
+Account Number (or another reference)
+Description
+
+A customer cannot purchase the same product multiple times.
+
+Each purchased product requires independent verification.
+
+Sales Verification
+
+Every purchased product enters a verification workflow.
+
+A Supervisor manually validates the information against another banking system.
+
+Verification result:
+
+Approved
+Rejected
+
+If approved:
+
+Product sale becomes final.
+Employee receives product score.
+Customer enters the retention process.
+
+If rejected:
+
+The record returns to the employee.
+Employee edits the information.
+Employee resubmits the verification.
+
+Rejected records never receive scores.
+
+Customer Conversion
+
+After successful verification,
+
+the Lead becomes a Bank Customer.
+
+The original Lead information must remain available for historical purposes.
+
+Customer retention is based on verified customers only.
+
+Customer Retention
+
+The system automatically creates Retention Tasks after a customer joins the bank.
+
+Retention schedules are configurable.
+
+Examples:
+
+15 days
+45 days
+90 days
+
+Retention Tasks may require Supervisor approval before publication.
+
+Each task is automatically assigned to the employee who successfully acquired the customer.
+
+Employees perform the visit.
+
+Record the result.
+
+Archive the task.
+
+Branch Managers may reassign retention tasks if necessary.
+
+POS Device Management
+
+The system manages POS terminals.
+
+POS devices are imported from external files.
+
+Each device contains information such as:
+
+Device Number
+Owner
+Address
+Branch
+Status
+
+A POS device belongs to one owner at a time.
+
+A device may move between branches over time.
+
+POS Transaction History
+
+Monthly transaction summaries are imported.
+
+Each monthly record contains:
+
+Device
+From Date
+To Date
+Transaction Amount
+
+The system calculates device productivity dynamically using imported history.
+
+The productivity formula is outside the scope of this phase.
+
+POS Visit Workflow
+
+Branch Managers assign POS visit tasks to employees.
+
+Employees visit the device.
+
+They register:
+
+Visit Result
+Tags
+Description
+
+Possible tags:
+
+Broken Device
+New Service Requested
+Maintenance Required
+
+Completed visits are archived.
+
+Employee Scoring
+
+Each banking product has a predefined score.
+
+Only verified sales generate scores.
+
+Rejected sales generate no score.
+
+Scores are accumulated per employee.
+
+League System
+
+The system contains two independent ranking systems.
+
+Marketing League
+
+Calculated from verified product scores.
+
+Each league has:
+
+Start Date
+End Date
+
+Employees are ranked based on accumulated scores.
+
+Retention League
+
+Calculated using customer retention performance.
+
+Retention League is always available but may also operate within configurable time periods.
+
+Notifications
+
+The system generates notifications for important events.
+
+Examples include:
+
+New Retention Task
+Verification Rejected
+Verification Approved
+Campaign Started
+POS Assignment
+Task Assignment
+
+Notifications may be delivered through:
+
+In-App Notifications
+Mobile Push
+External Messaging Services (future)
+Import Management
+
+The system supports importing external data.
+
+Supported imports include:
+
+Leads
+POS Devices
+POS Monthly Transactions
+
+Every import operation records:
+
+Import Date
+Imported File
+User
+Success Count
+Failure Count
+Reporting
+
+Each role has its own dashboard.
+
+Reports include:
+
+Campaign Performance
+Branch Performance
+Employee Performance
+Product Sales
+Customer Retention
+POS Productivity
+League Rankings
+Permissions
+Supervisor
+Full system administration
+Master data management
+Campaign management
+Verification
+Reports
+Dashboards
+Branch Manager
+Branch monitoring
+Employee monitoring
+Task reassignment
+POS assignment
+Branch reports
+Employee
+Select Leads
+Perform visits
+Register products
+Complete retention tasks
+Perform POS visits
+View personal rankings
+Important Business Constraints
+A Lead may belong to multiple campaigns over time but only one Active campaign simultaneously.
+Employees manually pick Leads from their branch.
+A selected Lead remains assigned until completion.
+Branch Managers may reassign tasks.
+One Visit record exists per Lead per Campaign.
+Multiple products may be registered in a single Visit.
+Each purchased product has its own verification.
+Verification is mandatory before scoring.
+Rejected verification returns to the employee.
+Customer Retention begins only after successful verification.
+Retention tasks are generated automatically.
+POS devices are imported.
+Monthly POS transactions are imported separately.
+The system is independent from the Core Banking System.
+Historical data must never be physically delete
