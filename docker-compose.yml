@@ -38,6 +38,11 @@ services:
       SMS_CODE_TTL_SECONDS: ${SMS_CODE_TTL_SECONDS:-300}
       SMS_MAX_ATTEMPTS: ${SMS_MAX_ATTEMPTS:-5}
       SMS_RESEND_COOLDOWN_SECONDS: ${SMS_RESEND_COOLDOWN_SECONDS:-60}
+      IMPORT_STORAGE_DIR: /app/var/imports
+      IMPORT_MAX_MB: ${IMPORT_MAX_MB:-10}
+      IMPORT_MAX_ROWS: ${IMPORT_MAX_ROWS:-5000}
+    volumes:
+      - import_data:/app/var/imports
     depends_on:
       postgres:
         condition: service_healthy
@@ -60,6 +65,7 @@ services:
     depends_on: [api]
 volumes:
   postgres_data:
+  import_data:
 networks:
   default:
     ipam:

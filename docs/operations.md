@@ -24,3 +24,9 @@ only in disposable test environments. Normal delete APIs must retain business ro
 
 Docker containers read `.env`; production should inject secrets from a deployment secret
 store. Do not print `docker compose config` or connection strings into shared logs.
+# POS database and file storage
+
+See [POS management](pos.md) for the eleven-table migration, runtime privileges,
+seeded global thresholds, and bounded import settings. Provision
+`IMPORT_STORAGE_DIR` on persistent private storage and back it up with PostgreSQL.
+Apply migrations using the owner connection before restarting the updated API.

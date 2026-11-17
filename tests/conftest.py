@@ -13,7 +13,7 @@ from app.core.config import Settings
 from app.core.db import Database
 from app.core.security import access_token, hasher
 from app.main import create_app
-from app.models import Branch, City, User
+from app.models import Branch, City, PosPerformanceSettings, PosTag, User
 
 MIGRATED_URLS = set()
 
@@ -94,6 +94,22 @@ async def schema(database):
                 "TRUNCATE cities, branches, users, refresh_tokens, "
                 "login_challenges, audit_logs RESTART IDENTITY CASCADE"
             )
+        )
+    async with database.sessions.begin() as session:
+        session.add(
+            PosPerformanceSettings(
+                id=1, lower_threshold=200000000, upper_threshold=1000000000, policy_version=1
+            )
+        )
+        session.add_all(
+            [
+                PosTag(code=code, name=name)
+                for code, name in (
+                    ("broken_device", "Broken Device"),
+                    ("new_service_requested", "New Service Requested"),
+                    ("maintenance_required", "Maintenance Required"),
+                )
+            ]
         )
     return database
 

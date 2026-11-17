@@ -45,10 +45,29 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     from app.features.audit.router import router as audit_router
     from app.features.auth.router import router as auth_router
+    from app.features.notifications.router import router as notifications_router
     from app.features.org.router import router as org_router
+    from app.features.pos.router_devices import router as devices_router
+    from app.features.pos.router_imports import router as imports_router
+    from app.features.pos.router_settings import router as settings_router
+    from app.features.pos.router_transactions import router as transactions_router
+    from app.features.pos.router_visits import router as visits_router
+    from app.features.reports.router import router as reports_router
     from app.features.users.router import router as users_router
 
-    for router in (auth_router, org_router, users_router, audit_router):
+    for router in (
+        auth_router,
+        org_router,
+        users_router,
+        audit_router,
+        devices_router,
+        transactions_router,
+        settings_router,
+        imports_router,
+        notifications_router,
+        visits_router,
+        reports_router,
+    ):
         app.include_router(router, prefix="/api/v1")
 
     @app.get("/api/v1/health")

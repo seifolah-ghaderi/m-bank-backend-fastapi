@@ -1,4 +1,5 @@
 from datetime import date, datetime
+from decimal import Decimal
 from uuid import UUID
 
 from sqlalchemy import inspect
@@ -27,6 +28,8 @@ SECRET_FIELDS = {
 
 
 def sanitize(value):
+    if isinstance(value, Decimal):
+        return str(value)
     if isinstance(value, datetime):
         return {"$datetime": value.isoformat()}
     if isinstance(value, date):

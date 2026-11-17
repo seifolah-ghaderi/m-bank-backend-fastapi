@@ -4,7 +4,7 @@ from app.core import dates
 from app.core.audit import record, snapshot
 from app.core.deps import eligible, require_roles, scope_for
 from app.core.errors import DomainError
-from app.core.lifecycle import active_branch, invalidate_sessions, lock_user
+from app.core.lifecycle import active_branch, assigned_task_count, invalidate_sessions, lock_user
 from app.core.pagination import paginate
 from app.core.security import hasher, temporary_password
 from app.core.text import search_key
@@ -115,6 +115,10 @@ async def update_user(session, user_id, actor, request, body=None, action="updat
     )
     if user.id == actor.id and destructive:
         raise DomainError(409, "cannot_modify_self")
+    if user.role == "employee" and destructive:
+        count = await assigned_task_count(session, user.id)
+        if count:
+            raise DomainError(409, "user_has_open_tasks", details={"task_count": count})
     if (
         user.role == "supervisor"
         and user.is_active

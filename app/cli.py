@@ -11,7 +11,7 @@ from app.core.config import Settings
 from app.core.db import Database, transaction
 from app.core.errors import DomainError
 from app.core.security import hasher, password_policy
-from app.models import LoginChallenge, RefreshToken, User
+from app.models import ImportLog, LoginChallenge, RefreshToken, User
 from app.schemas.users import UserCreate
 
 
@@ -50,6 +50,49 @@ async def purge_tokens(database):
         return tokens.rowcount, challenges.rowcount
 
 
+async def fail_stale_pos_imports(
+    database, settings, older_than_minutes, *, apply=False, confirm_no_active_imports=False
+):
+    if older_than_minutes < 1:
+        raise ValueError("older-than-minutes must be positive")
+    if apply and not confirm_no_active_imports:
+        raise ValueError("Confirm no active imports with --confirm-no-active-imports")
+    async with transaction(database) as session:
+        # A live importer holds its log row lock; never change its status here.
+        logs = list(
+            await session.scalars(
+                select(ImportLog)
+                .where(
+                    ImportLog.status == "processing",
+                    ImportLog.started_at < dates.now() - timedelta(minutes=older_than_minutes),
+                )
+                .with_for_update(skip_locked=True)
+            )
+        )
+        keys = set(await session.scalars(select(ImportLog.storage_key)))
+        root = settings.import_storage_dir.resolve()
+        orphans = sorted(p.name for p in root.glob("*.xlsx") if p.is_file() and p.name not in keys)
+        ids = [str(log.id) for log in logs]
+        if apply:
+            for log in logs:
+                log.status, log.finished_at = "failed", dates.now()
+                log.success_count = log.created_count = log.updated_count = log.unchanged_count = (
+                    log.skipped_count
+                ) = 0
+                log.failure_count = log.total_rows
+                log.component_counts = {}
+                log.warnings = [{"code": "interrupted_processing"}]
+                record(
+                    session,
+                    None,
+                    "recover_import",
+                    "import_logs",
+                    log.id,
+                    after={"status": "failed"},
+                )
+        return {"apply": apply, "stale_import_ids": ids, "orphan_files": orphans}
+
+
 async def run(args):
     settings = Settings()
     database = Database(settings.database_url.get_secret_value())
@@ -66,9 +109,23 @@ async def run(args):
             )
             user_id = await create_supervisor(database, details, password, args.force)
             print(f"Created Supervisor {user_id}; password change required on first login.")
-        else:
+        elif args.command == "purge-tokens":
             tokens, challenges = await purge_tokens(database)
             print(f"Purged {tokens} old refresh tokens and {challenges} old challenges.")
+        else:
+            import json
+
+            print(
+                json.dumps(
+                    await fail_stale_pos_imports(
+                        database,
+                        settings,
+                        args.older_than_minutes,
+                        apply=args.apply,
+                        confirm_no_active_imports=args.confirm_no_active_imports,
+                    )
+                )
+            )
     finally:
         await database.close()
 
@@ -82,6 +139,10 @@ def main():
     create.add_argument("--last-name", required=True)
     create.add_argument("--force", action="store_true")
     commands.add_parser("purge-tokens")
+    recover = commands.add_parser("fail-stale-pos-imports")
+    recover.add_argument("--older-than-minutes", type=int, required=True)
+    recover.add_argument("--apply", action="store_true")
+    recover.add_argument("--confirm-no-active-imports", action="store_true")
     args = parser.parse_args()
     try:
         asyncio.run(run(args))

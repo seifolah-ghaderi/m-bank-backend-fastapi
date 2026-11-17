@@ -40,3 +40,7 @@ origins with credentials and the documented CSRF/request-ID headers.
 
 See `.env.example` for configuration. Required signing, CSRF, and SMS-digest secrets
 must be independent and at least 32 characters. Fixed SMS mode is development-only.
+# POS API contracts
+
+POS uses the same `/api/v1` prefix, role scope, error envelope, pagination, and
+Jalali date types. See [POS management](pos.md) for the schema and configuration.

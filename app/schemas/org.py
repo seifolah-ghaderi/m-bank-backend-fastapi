@@ -67,3 +67,4 @@ class BranchOut(MetadataOut):
     city: IdentityOut
     manager: ManagerOut | None
     active_employee_count: int
+    pos_device_count: int

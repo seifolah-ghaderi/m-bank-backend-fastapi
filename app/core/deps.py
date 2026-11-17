@@ -25,6 +25,8 @@ class Scope:
             return statement
         if model is User and self.role == "employee":
             return statement.where(User.id == self.user_id)
+        if model.__tablename__ == "pos_visits" and self.role == "employee":
+            return statement.where(model.assigned_to == self.user_id)
         field = model.id if model.__tablename__ == "branches" else model.branch_id
         return statement.where(field == self.branch_id)
 

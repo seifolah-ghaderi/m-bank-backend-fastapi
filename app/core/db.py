@@ -24,6 +24,12 @@ def integrity_error(error: IntegrityError) -> DomainError:
         "uq_cities_name": "city_name_in_use",
         "uq_branches_code": "branch_code_in_use",
         "uq_branches_city_name": "branch_name_in_use",
+        "uq_pos_devices_number": "device_number_in_use",
+        "uq_pos_visits_open": "device_has_open_visit",
+        "ex_pos_transactions_period": "overlapping_period",
+        "ex_pos_device_branch_history_period": "overlapping_period",
+        "ex_pos_device_owner_history_period": "overlapping_period",
+        "uq_pos_tags_code": "tag_code_in_use",
     }
     # Inspect only internally; database messages and parameters never reach the client.
     for constraint, code in known.items():

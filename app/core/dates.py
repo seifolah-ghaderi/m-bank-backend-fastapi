@@ -76,3 +76,46 @@ JalaliDateTime = Annotated[
     PlainSerializer(format_datetime),
     WithJsonSchema({"type": "string", "examples": ["1405/08/25T09:30:00+03:30"]}),
 ]
+
+
+def month_bounds(year: int, month: int) -> tuple[date, date]:
+    first = jdatetime.date(year, month, 1)
+    following = jdatetime.date(year + (month == 12), 1 if month == 12 else month + 1, 1)
+    return first.togregorian(), following.togregorian() - timedelta(days=1)
+
+
+def period_range(
+    *, jalali_year=None, jalali_month=None, from_date=None, to_date=None, default=True
+) -> tuple[date, date]:
+    """Resolve one explicit month/range, rejecting contradictory/partial input."""
+    from app.core.errors import DomainError
+
+    try:
+        if jalali_year is not None or jalali_month is not None:
+            if jalali_year is None or jalali_month is None:
+                raise ValueError("Both year and month are required")
+            if not 1 <= jalali_year <= 1500:
+                raise ValueError("Invalid Jalali year")
+            start, end = month_bounds(jalali_year, jalali_month)
+            if (from_date is not None and from_date != start) or (
+                to_date is not None and to_date != end
+            ):
+                raise DomainError(422, "period_mismatch")
+        elif from_date is not None or to_date is not None:
+            if from_date is None or to_date is None:
+                raise ValueError("Both period bounds are required")
+            start, end = from_date, to_date
+        elif default:
+            current = jdatetime.date.fromgregorian(date=today())
+            year, month = (
+                (current.year - 1, 12) if current.month == 1 else (current.year, current.month - 1)
+            )
+            start, end = month_bounds(year, month)
+        else:
+            raise ValueError("Missing period")
+        a, b = (jdatetime.date.fromgregorian(date=d) for d in (start, end))
+        if end < start or (b.year - a.year) * 12 + b.month - a.month >= 24:
+            raise ValueError("Invalid period")
+        return start, end
+    except (ValueError, TypeError, OverflowError):
+        raise DomainError(422, "invalid_period") from None

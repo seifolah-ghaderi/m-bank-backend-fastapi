@@ -32,5 +32,9 @@ the local login rate-limit allowance. `docker compose exec -T nginx nginx -t` va
 the mounted proxy configuration. Application tests and runtime privilege tests are
 separate, so using a schema-owner fixture cannot conceal missing runtime restrictions.
 
-POS-specific guards and tests belong to the POS change. Production handset delivery
+POS schema/privilege, registry/history/export, import/recovery, transaction/performance,
+visit/concurrency, report, and end-to-end tests are in `test_pos_*.py`.
+Optional local-only tools `scripts/profile-pos.py` and `scripts/check-pos.py` are
+excluded from required acceptance at the user's request. They use synthetic data;
+the profile refuses any database name except `crm_pos_scale_test`. Production handset delivery
 needs separate operational verification; fake-provider tests do not establish it.

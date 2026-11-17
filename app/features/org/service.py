@@ -4,10 +4,11 @@ from app.core import dates
 from app.core.audit import record, snapshot
 from app.core.deps import scope_for
 from app.core.errors import DomainError
+from app.core.lifecycle import lifecycle_actor
 from app.core.pagination import paginate
 from app.core.text import search_key
 from app.core.validation import validated_changes
-from app.models import Branch, City, User
+from app.models import Branch, City, PosDevice, User
 from app.schemas.org import BranchOut, CityOut
 
 
@@ -54,6 +55,11 @@ async def branch_out(session, branch):
         if manager
         else None,
         active_employee_count=count,
+        pos_device_count=await session.scalar(
+            select(func.count())
+            .select_from(PosDevice)
+            .where(PosDevice.branch_id == branch.id, PosDevice.deleted_at.is_(None))
+        ),
     )
 
 
@@ -100,6 +106,7 @@ async def list_entities(
 
 
 async def create_entity(session, model, body, actor, request):
+    actor = await lifecycle_actor(session, actor, "supervisor")
     values = body.model_dump()
     if model is Branch:
         await get_entity(session, City, values["city_id"], actor, lock=True)
@@ -119,6 +126,7 @@ async def create_entity(session, model, body, actor, request):
 
 
 async def update_entity(session, model, entity_id, body, actor, request):
+    actor = await lifecycle_actor(session, actor, "supervisor")
     required = {"name", "is_active"} | ({"city_id", "code"} if model is Branch else set())
     changes = validated_changes(body, required)
     if model is Branch and "city_id" in changes:
@@ -136,6 +144,7 @@ async def update_entity(session, model, entity_id, body, actor, request):
 
 
 async def delete_entity(session, model, entity_id, actor, request):
+    actor = await lifecycle_actor(session, actor, "supervisor")
     entity = await get_entity(session, model, entity_id, actor, lock=True)
     dependent, field = (Branch, Branch.city_id) if model is City else (User, User.branch_id)
     if await session.scalar(
@@ -144,6 +153,12 @@ async def delete_entity(session, model, entity_id, actor, request):
         .where(field == entity.id, dependent.deleted_at.is_(None))
     ):
         raise DomainError(409, "city_has_branches" if model is City else "branch_in_use")
+    if model is Branch and await session.scalar(
+        select(PosDevice.id)
+        .where(PosDevice.branch_id == entity.id, PosDevice.deleted_at.is_(None))
+        .limit(1)
+    ):
+        raise DomainError(409, "branch_in_use")
     before = snapshot(entity)
     entity.deleted_at, entity.deleted_by, entity.updated_by = dates.now(), actor.id, actor.id
     await session.flush()

@@ -1,8 +1,31 @@
-from sqlalchemy import select, update
+from sqlalchemy import func, select, text, update
 
 from app.core import dates
 from app.core.errors import DomainError
 from app.models import Branch, LoginChallenge, RefreshToken, User
+
+
+async def lifecycle_actor(session, actor, *roles):
+    from app.core.deps import eligible, require_roles
+
+    await session.execute(text("SELECT pg_advisory_xact_lock(72851901)"))
+    current = await lock_user(session, actor.id)
+    eligible(current)
+    if current.must_change_password:
+        raise DomainError(403, "password_change_required")
+    if roles:
+        require_roles(current, *roles)
+    return current
+
+
+async def assigned_task_count(session, user_id):
+    from app.models import PosVisit
+
+    return await session.scalar(
+        select(func.count())
+        .select_from(PosVisit)
+        .where(PosVisit.assigned_to == user_id, PosVisit.status == "assigned")
+    )
 
 
 async def lock_user(session, user_id):

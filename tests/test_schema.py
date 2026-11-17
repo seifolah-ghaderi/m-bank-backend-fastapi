@@ -18,6 +18,17 @@ async def test_migration_tables_and_actor_fks(schema):
             "refresh_tokens",
             "login_challenges",
             "audit_logs",
+            "pos_devices",
+            "pos_device_branch_history",
+            "pos_device_owner_history",
+            "pos_monthly_transactions",
+            "pos_visits",
+            "pos_visit_tag_links",
+            "pos_tags",
+            "pos_performance_settings",
+            "notifications",
+            "import_logs",
+            "import_row_errors",
         }
         for name in ("cities", "branches", "users"):
             keys = await connection.run_sync(
@@ -86,6 +97,12 @@ async def test_unique_manager_and_pending_challenge(schema):
         "DELETE FROM audit_logs",
         "TRUNCATE audit_logs",
         "CREATE TABLE unauthorized(id int)",
+        "DELETE FROM pos_devices",
+        "DELETE FROM pos_visits",
+        "DELETE FROM pos_device_branch_history",
+        "DELETE FROM pos_device_owner_history",
+        "DELETE FROM pos_monthly_transactions",
+        "DELETE FROM pos_visit_tag_links",
     ],
 )
 async def test_runtime_forbidden_privileges(schema, sql):

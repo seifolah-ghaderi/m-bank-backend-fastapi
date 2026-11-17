@@ -21,8 +21,10 @@ def mobile(value: str) -> str:
     value = re.sub(r"[\s-]", "", digits(value))
     for prefix in ("+98", "0098", "98"):
         if value.startswith(prefix):
-            value = "0" + value[len(prefix) :]
+            value = value[len(prefix) :]
             break
+    if re.fullmatch(r"9[0-9]{9}", value):
+        value = "0" + value
     if not re.fullmatch(r"09[0-9]{9}", value):
         raise ValueError("invalid_mobile")
     return value

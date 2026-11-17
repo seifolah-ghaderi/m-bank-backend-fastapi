@@ -1,7 +1,9 @@
 # Bank Marketing CRM backend
 
 Python 3.12 / FastAPI / PostgreSQL 16. This phase serves a web frontend and implements
-core organization and authentication APIs. POS management is a subsequent change.
+organization, authentication, and POS management APIs. See [POS management](docs/pos.md)
+for English XLSX headers, monthly activity imports, global rial thresholds,
+Supervisor dispatch, branch assignment, and employee visits.
 `requirement.txt` contains product requirements, not pip dependencies.
 
 ## Local setup

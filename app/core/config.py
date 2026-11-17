@@ -1,3 +1,4 @@
+from pathlib import Path
 from typing import Literal
 from zoneinfo import ZoneInfo
 
@@ -26,6 +27,9 @@ class Settings(BaseSettings):
     sms_code_ttl_seconds: int = Field(default=300, ge=30)
     sms_max_attempts: int = Field(default=5, ge=1, le=10)
     sms_resend_cooldown_seconds: int = Field(default=60, ge=1)
+    import_storage_dir: Path = Path("var/imports")
+    import_max_mb: int = Field(default=10, ge=1, le=10)
+    import_max_rows: int = Field(default=5000, ge=1, le=5000)
 
     @field_validator("database_url", "migration_database_url")
     @classmethod

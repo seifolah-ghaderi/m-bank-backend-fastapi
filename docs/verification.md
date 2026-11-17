@@ -1,4 +1,35 @@
-# Core backend verification
+# Backend verification
+
+## POS management — 2026-11-17
+
+`add-pos-management` implements terminal registry/history/export, English-header
+XLSX imports and sample aliases, period amount/count summaries, query-time rial
+performance with global settings, Supervisor dispatch and immutable evidence,
+branch-manager assignment, employee visits/tags, notifications, scoped reports,
+and the corresponding organization/user lifecycle guards.
+
+Final required checks:
+
+- `uv run pytest -q`: **166 passed** on real PostgreSQL 16, including core
+  regressions and POS constraint/privilege, scope, import failure/recovery,
+  monetary precision, history, concurrency, and complete workflow tests.
+- `uv run ruff check .` and `uv run ruff format --check .`: passed.
+- `uv run alembic check`: no new upgrade operations. The GIN operator expression
+  emits SQLAlchemy's automatic-comparison warning; its generated definition was
+  manually reviewed. All other metadata comparison completed.
+- Initial POS migration was verified on an existing core database and a separate
+  freshly initialized database, including seeded settings/tags and runtime-role
+  restrictions. The period covering-index migration was applied to disposable
+  test databases and is included in the final regression schema.
+
+The user requested skipping further performance and smoke tests. The final
+performance rerun and deployed smoke/persistence follow-up are excluded from
+required acceptance and are not reported as completed. Earlier exploratory local
+profiles and the initial synthetic proxy flow do not establish final production
+or container-recreation verification. Optional scripts remain available for a
+later request. No production deployment or OpenSpec archive was performed.
+
+## Core backend (historical record)
 
 The `add-core-backend` implementation was verified with:
 

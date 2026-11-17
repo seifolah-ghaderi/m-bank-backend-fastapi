@@ -8,6 +8,7 @@ RUN uv sync --locked --no-dev
 COPY alembic.ini ./
 COPY migrations ./migrations
 RUN useradd --create-home --uid 10001 crm
+RUN install -d -o crm -g crm /app/var/imports
 USER crm
 EXPOSE 8000
 CMD ["uv", "run", "--no-sync", "uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--no-access-log"]

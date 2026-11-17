@@ -53,7 +53,8 @@ Supervisor-only `GET /audit-logs` accepts `entity_type`, `entity_id`, `actor_id`
 writes and audit records commit together; failed auth counters/revocations and
 their sanitized audit records persist before the error response.
 
-POS management will introduce device counts, device-dependent organization deletion
-guards, and `user_has_open_tasks` guards on employee changes. This core API has no
-placeholder POS counts, routes, or tables. Notifications, imports, and reports also
-remain in that subsequent change.
+POS management now adds `pos_device_count`, terminal-dependent branch deletion
+guards, and `user_has_open_tasks` on incompatible employee lifecycle changes.
+Pending Supervisor dispatches have no employee assignee; only assigned visits
+block employee deactivation, deletion, role or branch changes. See [POS management](pos.md)
+for imports, transaction performance, dispatch/visits, notifications and reports.

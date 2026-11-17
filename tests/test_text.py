@@ -19,7 +19,7 @@ def test_mobile_normalization(value):
 
 
 @pytest.mark.parametrize(
-    "value", ["0912", "009809123456789", "08123456789", "091234567890", "0912345678x"]
+    "value", ["0912", "0098009123456789", "08123456789", "091234567890", "0912345678x"]
 )
 def test_invalid_mobiles(value):
     with pytest.raises(ValueError, match="invalid_mobile"):

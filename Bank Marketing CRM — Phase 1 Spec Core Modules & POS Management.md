@@ -2,16 +2,18 @@
 
 Nov 16, 2026 · @seif
 
+> POS implementation revision, 2026-11-17: `openspec/changes/add-pos-management/` captures the implemented POS module and its approved contracts. The archived core change and current `openspec/specs/` govern implemented authentication, web integration, and Jalali API contracts. Pending POS delta specs remain in the active change until separately synced/archived. Further performance and smoke checks were skipped at the user's request; functional regression and lint checks remain required.
+
 ## 1. Overview and scope
 
-Phase 1 builds the foundation every later module depends on: authentication, the city, branch and user hierarchy, and complete POS terminal management. It is backend-only (a REST API serving the web admin panel and the mobile app) and is independent of the Core Banking System.
+Phase 1 builds the foundation every later module depends on: authentication, the city, branch and user hierarchy, and complete POS terminal management. It is backend-only (a REST API serving the web frontend) and is independent of the Core Banking System.
 
 ### Goals
 
 - Phone-number and password login for three roles: Supervisor, Branch Manager and Employee.
 - Master data for cities, branches and employees, managed by the Supervisor.
 - A POS device registry filled by Excel import through a dedicated API or by manual entry, with full history of branch moves, owner changes and monthly transactions.
-- POS visit tasks: a manager assigns, the employee executes with a result, tags and description, and the finished task is archived.
+- POS follow-up: the Supervisor selects terminals and dispatches to their owning branches; branch managers assign employees, who record results/tags and archive the completed tasks. Selection evidence remains immutable.
 - A complete audit trail, and no business record is ever physically deleted.
 
 ### In scope
@@ -23,8 +25,8 @@ Phase 1 builds the foundation every later module depends on: authentication, the
 | Branches | CRUD with soft delete, derived manager |
 | Users | CRUD, activate and deactivate, reset password, branch assignment |
 | POS devices | CRUD, status, branch transfer, owner change, history, Excel import and export |
-| POS transactions | Excel import, manual entry, history, dynamic productivity |
-| POS visits | Assign, bulk assign, reassign, cancel, execute with tags, archive |
+| POS transactions | Excel import, manual entry, period amount/count history, query-time performance |
+| POS visits | Supervisor dispatch, branch queue, manager assignment/bulk assignment, reassign, cancel, execute, archive, immutable selection snapshots |
 | Imports | Import log, stored file and row-level errors for every import |
 | Notifications | In-app notifications for POS and task events |
 | Audit | Append-only audit log for every write |
@@ -34,7 +36,7 @@ Phase 1 builds the foundation every later module depends on: authentication, the
 
 - Leads, campaigns, customer visits, product sales, verification, retention, scoring and leagues (later phases).
 - Mobile push and external messaging services (in-app notifications only).
-- The final productivity formula; a replaceable placeholder is provided.
+- Imported external performance classifications, CSV input in this first XLSX delivery, and automatic dispatch/employee allocation. Performance uses configurable rial thresholds on period totals.
 - Any integration with the Core Banking System.
 - Web and mobile UI code.
 
@@ -78,7 +80,7 @@ The backend is a modular monolith: one FastAPI app, one PostgreSQL database, and
 ```text
 app/
   main.py                 app factory, router registration, middleware
-  cli.py                  create-supervisor, seed-tags
+  cli.py                  create-supervisor, seed-tags, fail-stale-pos-imports
   core/
     config.py             pydantic-settings, env vars
     db.py                 async engine, session dependency
@@ -88,7 +90,9 @@ app/
     pagination.py         page params and response model
     audit.py              record(...) helper
     text.py               digit, mobile, national code and Persian normalizers
-    excel.py              xlsx reader and writer helpers
+    excel.py              bounded xlsx readers and safe writers
+    notifications.py      transactional notification insertion
+    lifecycle.py          shared user/branch/POS work guards and lock order
   models/                 SQLAlchemy models: base, org, user, pos, imports, audit, notification
   schemas/                Pydantic schemas mirroring models
   features/
@@ -99,6 +103,7 @@ app/
                           router_visits.py router_imports.py
                           service_devices.py service_transactions.py
                           service_visits.py service_imports.py
+                          router_settings.py service_settings.py
                           productivity.py import_columns.py
     notifications/        router.py service.py
     audit/                router.py
@@ -112,7 +117,7 @@ Dockerfile  docker-compose.yml  pyproject.toml  .env.example
 
 - Request flow is router, then service, then database. Routers validate input, call one service function and return a schema. They hold no business rules.
 - Services are async functions taking the session and the acting user. They raise DomainError subclasses and never HTTPException.
-- One transaction per request. The session dependency commits on success and rolls back on error; services call flush, never commit. Import rows use savepoints (begin\_nested).
+- One transaction per request. The session dependency commits on success and rolls back on error; services call flush, never commit. Import rows use savepoints (begin\_nested). Import orchestration commits a durable processing log separately before the file business transaction and finalizes failed processing separately after rollback; individual services still never commit.
 - A feature never imports another feature's service. Shared logic lives in core/ or models/. The one allowed exception: the POS import service calls the POS device service (transfer, change owner) because both are in the same feature.
 - Schemas are named XCreate, XUpdate, XOut and XListItem. Responses are always built from schemas, never from raw ORM objects.
 - Datetimes are timezone-aware UTC. Dates are plain dates. Money is Decimal in the app and numeric in the database; never float.
@@ -140,7 +145,10 @@ Three roles exist, and every request is scoped by the caller's role: the Supervi
 | POS transactions: view and productivity | All | Own branch | No |
 | POS transactions: create, edit, delete | Yes | No | No |
 | POS imports: upload, list, errors, download file | Yes | No | No |
-| POS visit tasks: assign, bulk assign, reassign, cancel | Yes | Own branch | No |
+| POS follow-up: select and dispatch to owning branches | Yes | No | No |
+| POS visit tasks: assign, bulk assign, reassign | No | Own branch, Supervisor-dispatched work only | No |
+| POS visit tasks: cancel | All | Own branch | No |
+| POS performance thresholds: edit | Yes | No | No |
 | POS visit tasks: list and view | All | Own branch | Own tasks |
 | POS visit tasks: complete | No | No | Own tasks |
 | POS visit tasks: correct after completion | Yes | No | No |
@@ -160,7 +168,7 @@ Three roles exist, and every request is scoped by the caller's role: the Supervi
 
 ## 4. Data model (PostgreSQL)
 
-Phase 1 has 15 tables. All tables are defined here with the constraints the application must also enforce; types are PostgreSQL types.
+The implemented core has six tables, including SMS login challenges. This POS plan adds eleven tables, for seventeen total business/security tables (excluding Alembic metadata). The tables below describe the Phase 1 domain; the core migration/OpenSpec specs also define login_challenges and the current authentication fields. Types are PostgreSQL types.
 
 ### Common columns
 
@@ -232,6 +240,8 @@ Constraints and indexes:
 | owner\_mobile | varchar(11) | null; normalized |
 | owner\_national\_code | varchar(10) | null; checksum validated |
 | shop\_name | varchar(200) | null |
+| account\_number | varchar(100) | null; text identifier, leading zeros preserved |
+| contact\_phone | varchar(30) | null; optional contact phone |
 | address | text | not null |
 | branch\_id | uuid | FK branches, not null; current branch |
 | status | varchar(20) | not null, default active; check in (active, inactive, under\_maintenance, retired) |
@@ -261,6 +271,8 @@ Constraints: check to\_date is null or to\_date >= from\_date; unique (pos\_devi
 | owner\_mobile | varchar(11) | null |
 | owner\_national\_code | varchar(10) | null |
 | shop\_name | varchar(200) | null |
+| account\_number | varchar(100) | null; text identifier, leading zeros preserved |
+| contact\_phone | varchar(30) | null; optional contact phone |
 | from\_date | date | not null |
 | to\_date | date | null; null means current |
 
@@ -273,7 +285,8 @@ Same open-row and no-overlap constraints as the branch history table.
 | pos\_device\_id | uuid | FK pos\_devices, not null |
 | from\_date | date | not null |
 | to\_date | date | not null; check to\_date >= from\_date and to\_date - from\_date <= 365 |
-| transaction\_amount | numeric(20,2) | not null; check >= 0 |
+| transaction\_amount | numeric(20,2) | not null; rials; check >= 0 |
+| transaction\_count | bigint | not null; check >= 0 |
 | source | varchar(10) | not null; manual or import |
 | import\_id | uuid | FK import\_logs, null |
 
@@ -287,31 +300,34 @@ Constraints: exclusion constraint on (pos\_device\_id, daterange(from\_date, to\
 | name | varchar(100) | not null |
 | is\_active | boolean | not null, default true |
 
-### pos\_visits
+### pos_visits
+
+One row represents Supervisor selection, branch queue, employee assignment, and the archived result. BaseMixin applies; visits are never physically deleted.
 
 | Column | Type | Rules |
 | --- | --- | --- |
-| pos\_device\_id | uuid | FK pos\_devices, not null, indexed |
-| branch\_id | uuid | FK branches, not null; the device's branch at assignment time |
-| assigned\_to | uuid | FK users, not null |
-| assigned\_by | uuid | FK users, not null |
-| assigned\_at | timestamptz | not null, default now() |
-| due\_date | date | null |
-| instructions | text | null; manager's note to the employee |
-| status | varchar(15) | not null, default assigned; check in (assigned, completed, cancelled) |
-| result | varchar(30) | null; check in (visited, owner\_unavailable, shop\_closed, device\_not\_found) |
-| description | text | null |
-| visited\_at | timestamptz | null |
-| completed\_at | timestamptz | null |
-| cancelled\_at | timestamptz | null |
-| cancelled\_by | uuid | FK users, null |
-| cancel\_reason | varchar(255) | null |
+| pos_device_id | uuid | FK pos_devices, not null |
+| branch_id | uuid | FK branches, not null; immutable owning branch at dispatch |
+| selected_by, selected_at | uuid, timestamptz | selecting Supervisor and dispatch time, not null |
+| assigned_to, assigned_by, assigned_at | uuid, uuid, timestamptz | null while pending; employee, assigning manager, and time after assignment |
+| due_date, instructions | date, text | optional; due date not past on assignment; instructions up to 2,000 characters |
+| status | varchar(25) | pending_assignment, assigned, completed, cancelled |
+| snapshot_from_date, snapshot_to_date | date | selected inclusive period, immutable |
+| snapshot_amount, snapshot_count | numeric(30,2), numeric(30,0) | immutable aggregates; null only for no data |
+| snapshot_no_data | boolean | immutable, not null |
+| snapshot_performance | varchar(10) | low, normal, high, or null for no data |
+| snapshot_lower_threshold, snapshot_upper_threshold | numeric(20,2) | immutable rial thresholds at selection |
+| snapshot_policy_version | bigint | immutable settings version |
+| snapshot_unit, snapshot_method | varchar | rials, period_total_amount; immutable |
+| result, description | varchar(30), text | completion result and optional description |
+| visited_at, completed_at | timestamptz | required when completed |
+| cancelled_at, cancelled_by, cancel_reason | timestamptz, uuid, varchar(255) | required when cancelled |
 
-Constraints and indexes:
+Constraints: one open row per device where status is pending_assignment or assigned; state checks enforce assignment/completion/cancellation metadata. Database guard prevents snapshot/selection/dispatch-branch changes. Index (assigned_to, status, due_date), (branch_id, status), and terminal FK.
 
-- uq\_pos\_visits\_one\_open\_per\_device: unique (pos\_device\_id) where status = assigned.
-- ck\_pos\_visits\_completed: status = completed requires result, visited\_at and completed\_at.
-- Indexes: (assigned\_to, status, due\_date), (branch\_id, status).
+### pos_performance_settings
+
+One seeded singleton row stores lower_threshold numeric(20,2) = 200000000, upper_threshold numeric(20,2) = 1000000000, policy_version bigint, and update actor/time. Check 0 <= lower_threshold < upper_threshold. Only the Supervisor edits it; all branches use the same pair. Units are rials and edits are audited.
 
 ### pos\_visit\_tag\_links
 
@@ -326,15 +342,17 @@ Primary key (pos\_visit\_id, tag\_id). This is the many-to-many link between vis
 
 | Column | Type | Rules |
 | --- | --- | --- |
-| import\_type | varchar(30) | not null; pos\_devices or pos\_transactions |
-| mode | varchar(20) | not null; upsert or create\_only |
+| import\_type | varchar(30) | not null; pos\_devices, pos\_transactions or pos\_combined; future leads remains separate |
+| mode | varchar(20) | fixed by type: create\_only for registry, upsert for transactions, combined for both |
+| period\_from, period\_to | date | nullable; resolved upload-level period for transaction/combined files |
+| component\_counts | jsonb | registry/activity outcomes for combined imports |
 | file\_name | varchar(255) | not null; original name |
 | storage\_key | varchar(500) | not null; path of the stored original file |
 | file\_sha256 | char(64) | not null |
 | status | varchar(25) | not null; processing, completed, completed\_with\_errors, failed |
 | total\_rows | integer | not null, default 0 |
 | created\_count, updated\_count, unchanged\_count, skipped\_count | integer | not null, default 0 |
-| success\_count | integer | not null, default 0; created plus updated plus unchanged |
+| success\_count | integer | accepted rows, including valid skipped rows; success plus failure equals total rows |
 | failure\_count | integer | not null, default 0 |
 | started\_at, finished\_at | timestamptz | started\_at not null |
 
@@ -462,11 +480,11 @@ The Supervisor maintains cities and branches; every other role can only read the
 ### Branches
 
 - Fields: city\_id, code, name, address, phone, is\_active. The response also carries city (id, name), manager (id, full\_name, mobile, or null), and counts of active employees and non-deleted POS devices.
-- code is stored uppercase, 2 to 20 characters from A-Z, 0-9 and hyphen, unique among non-deleted branches. It is the key used in Excel imports, so it should be treated as stable; changing it is allowed for the Supervisor and audited.
+- code is stored uppercase, 2 to 20 text characters from A-Z, 0-9 and hyphen; preserve leading zeros such as 007100, unique among non-deleted branches. It is the key used in Excel imports, so it should be treated as stable; changing it is allowed for the Supervisor and audited.
 - name is unique within its city.
 - The manager is derived, not stored on the branch. A manager is set by creating or editing a user with role branch\_manager and that branch\_id. A second manager for the same branch returns 409 branch\_already\_has\_manager. A branch without a manager is valid.
 - A branch can move to another city (Supervisor only); its users and devices stay with it.
-- Deactivating a branch blocks new POS device creation, transfers into it, imports into it (branch\_inactive) and new visit assignments, but does not touch existing data.
+- Deactivating a branch blocks new terminal creation/placement, transfers into it, Supervisor dispatch and new employee assignments. Existing data remains and current assignees may complete existing visits. Transaction import for existing terminals does not change branch placement.
 - Delete is a soft delete and returns 409 branch\_in\_use while non-deleted users or POS devices belong to it.
 
 ### Visibility
@@ -525,9 +543,11 @@ The Supervisor owns the POS registry: devices arrive by Excel import (section 9)
 | --- | --- |
 | device\_number | Required, trimmed, 3 to 50 characters, letters, digits, hyphen, underscore; Persian digits converted to ASCII; letters upper-cased; unique among non-deleted devices |
 | owner\_name | Required, 2 to 200 characters |
-| owner\_mobile | Optional, normalized mobile (section 5) |
+| owner\_mobile | Optional, normalized Iranian mobile; +9809173094912, 09173094912 and 9173094912 all become 09173094912 |
 | owner\_national\_code | Optional, 10 digits, valid checksum |
 | shop\_name | Optional, up to 200 characters |
+| account\_number | Optional text, up to 100 characters; preserve leading zeros |
+| contact\_phone | Optional text, up to 30 characters |
 | address | Required, 5 to 1000 characters |
 | branch\_id | Required, must be an active branch |
 | status | active (default), inactive, under\_maintenance, retired |
@@ -537,7 +557,7 @@ The national code checksum: with digits d1 to d10, let s be the sum of d(i) time
 ### Features
 
 1. Create manually: the Supervisor submits the fields above plus an optional effective\_date (default today, not in the future). The service creates the device with source manual and opens the first branch-history and owner-history rows starting on effective\_date.
-2. List, search and filter: q (matches device\_number, owner\_name, shop\_name, address), branch\_id, city\_id, status, source, has\_open\_visit, no\_transactions\_since (date), include\_deleted (Supervisor only). Sort by device\_number, owner\_name, created\_at or status. Paginated.
+2. List, search and filter: q (matches device\_number, owner\_name, shop\_name, address), branch\_id, city\_id, status, source, has\_open\_visit (pending or assigned), no\_transactions\_since (date), include\_deleted (Supervisor only). Sort by device\_number, owner\_name, created\_at or status. Paginated.
 3. Detail: the device plus current branch with its city, current owner, status, the open visit if any, the latest completed visit with its tags, and the date of the last imported transaction period.
 4. Update (correction): the Supervisor edits address, shop\_name, owner fields, status, and device\_number. Owner fields here are corrections of the current owner record; the open owner-history row is updated with them and the change is audited. A real handover uses change-owner.
 5. Transfer to another branch: described below.
@@ -551,9 +571,9 @@ The national code checksum: with digits d1 to d10, let s be the sum of d(i) time
 
 Any status can change to any other. Statuses restrict only what can be done next:
 
-| Status | Visit assignment | Transaction import and entry | Appears in lists |
+| Status | Follow-up dispatch | Transaction import and entry | Appears in lists |
 | --- | --- | --- | --- |
-| active | Allowed | Allowed | Yes |
+| active | Supervisor dispatch allowed | Allowed | Yes |
 | inactive | Allowed | Allowed | Yes |
 | under\_maintenance | Allowed | Allowed | Yes |
 | retired | Blocked: 409 device\_retired | Allowed (late data may still arrive) | Yes, with a filter to hide |
@@ -564,169 +584,119 @@ Tags on visits do not change the status automatically; managers act on the Broke
 
 - Request: to\_branch\_id, effective\_date (default today, not in the future, not before the current branch-history from\_date), reason (optional, up to 255 characters).
 - Rules: the target branch must be active and different from the current branch.
-- Effects, in one transaction: close the open branch-history row with to\_date equal to effective\_date minus one day (or the same day if from\_date equals effective\_date, in which case the row is replaced); open a new row from effective\_date; update pos\_devices.branch\_id; cancel any open visit task of the device with cancel\_reason device\_transferred and notify its assignee; write an audit row.
-- Past visits, transactions and history stay attached to the device and keep their original branch\_id.
+- Effects, in one transaction: for a later date, close the open branch-history row the preceding day and open a new row; for a same-start-date change, correct the current row in place with the superseded state retained in audit; update pos\_devices.branch\_id; cancel any pending or assigned visit task with cancel\_reason device\_transferred and notify its assignee or pending branch manager; write an audit row.
+- Past visits keep their branch-at-dispatch and immutable selection evidence. Transactions/history stay attached to the device; transaction visibility follows its current branch, while branch history preserves historical membership.
 
 ### Change owner
 
 - Request: owner\_name (required), owner\_mobile, owner\_national\_code, shop\_name, effective\_date (default today, not in the future, not before the current owner-history from\_date).
-- Effects: close the open owner-history row the day before effective\_date, open a new one, copy the new values onto pos\_devices, audit.
+- Effects: for a later date, close the open owner-history row the preceding day and open a new one. For a same-start-date handover, update the open row and audit its superseded state; never physically delete history. Copy current owner/account/contact values onto the device and audit.
 
 ### Delete and restore
 
-- Delete returns 409 device\_has\_open\_visit while an assigned visit exists; the manager must cancel it first. Monthly transactions, visits and history are kept and become unreachable from lists but remain in the database.
+- Delete returns 409 device\_has\_open\_visit while pending or assigned work exists; the manager must cancel it first. Monthly transactions, visits and history remain in the database. Current registry lists exclude the deleted terminal; authorized archived visit access preserves its historical identity.
 - Restore fails with 409 device\_number\_in\_use if another non-deleted device now uses the number.
 
-## 9. POS device Excel import
+## 9. POS spreadsheet imports
 
-The Supervisor uploads an .xlsx file to a dedicated endpoint. Valid rows are saved, invalid rows are reported with a reason, and every import leaves a log entry and the stored original file. The same engine and rules serve the transactions import in section 10.
+Only Supervisors import `.xlsx` files. Registry imports create new terminals and skip existing live terminals; they never update an existing terminal, transfer it, or change its owner. Transaction imports correct exact terminal-period matches. Combined files apply both behaviors within one row savepoint.
 
-### Upload contract
+### Upload contract and columns
 
-- Endpoint: POST /api/v1/pos/imports/devices as multipart/form-data with fields file (required) and mode (optional, upsert or create\_only, default upsert).
-- Limits: .xlsx only (checked by file signature, not just extension), 10 MB, 5,000 data rows. Larger files return 413 file\_too\_large or 422 too\_many\_rows. Processing is synchronous in Phase 1 and returns the full result in the response.
-- Only the first visible sheet is read. Row 1 is the header. Fully empty rows are skipped. Formulas are not evaluated; the cached value is read.
-- A template with the correct headers and one example row is downloadable from GET /api/v1/pos/imports/templates/devices.
+- POST /api/v1/pos/imports/devices, /transactions, or /combined as multipart with file. Modes are fixed by endpoint: registry create_only, activity upsert, combined both. No registry upsert mode is offered.
+- Limits: 10 MB and 5,000 nonempty data rows; synchronous processing; first visible sheet; row 1 headers. Verify workbook format and limits before business mutations. CSV is deferred in this XLSX delivery.
+- Header matching normalizes case, surrounding whitespace, Persian character variants, and underscore/space. Reject duplicate aliases for the same canonical column. Extra unknown columns produce warnings.
+- Registry requires device_number, owner_name, address, branch_code. Optional: owner_mobile, owner_national_code, shop_name, account_number, contact_phone, operational status.
+- Activity requires device_number, transaction_amount, transaction_count, and a period. Period comes from upload-level jalali_year/jalali_month together or row-level from_date/to_date. Explicit row dates must match a supplied upload month. Combined files require both sets of fields for new terminals.
 
-### Columns
-
-Header matching ignores case, surrounding spaces, and the difference between underscore and space. Accepted aliases (for example Persian headers) are defined in features/pos/import\_columns.py so they can be extended without code changes elsewhere.
-
-| Header | Required | Rule |
-| --- | --- | --- |
-| device\_number | Yes | Same validation as manual entry; Excel numeric cells are converted to text without a decimal part |
-| owner\_name | Yes | 2 to 200 characters |
-| address | Yes | 5 to 1000 characters |
-| branch\_code | Yes | Must match an active branch code, case-insensitive |
-| owner\_mobile | No | Normalized mobile |
-| owner\_national\_code | No | Checksum validated |
-| shop\_name | No | Up to 200 characters |
-| status | No | active, inactive, under\_maintenance or retired; default active on create |
-
-Missing required headers fail the whole file (422 missing\_columns, listing them). Unknown extra columns are ignored and reported as warnings in the response.
-
-### Row processing
-
-1. An import\_logs row is created first, in its own transaction, with status processing, so even a crash leaves a trace. The original file is stored under IMPORT\_STORAGE\_DIR with a random name and its SHA-256 recorded.
-2. Each data row runs inside a savepoint. A failing row is rolled back alone and written to import\_row\_errors; the other rows continue.
-3. A device\_number that appears again later in the same file is rejected with duplicate\_in\_file; the first occurrence wins.
-4. New device\_number: create the device with source import, set last\_import\_id, open branch-history and owner-history rows starting today.
-5. Existing device\_number in upsert mode: compare each provided, non-empty cell with the stored value. Empty cells never clear stored values. If nothing differs the row counts as unchanged. A different branch\_code calls the same transfer logic as section 8 (effective today, open visits cancelled). A different owner\_name, owner\_mobile or owner\_national\_code calls change-owner with effective date today. Other differences (address, shop\_name, status) update the row and are audited.
-6. Existing device\_number in create\_only mode: the row is skipped and counted in skipped\_count, not as a failure.
-7. A soft-deleted device with the same number fails with device\_deleted; restore it first.
-8. At the end the log gets status completed (no failures), completed\_with\_errors (some failures, some successes) or failed (nothing succeeded), plus all counters and finished\_at.
-
-Re-uploading the same file is safe: every row comes back unchanged. If the SHA-256 matches an earlier import the response includes duplicate\_of with that import id; it is a hint, not a block.
-
-### Row error codes
-
-| Code | Meaning |
+| Sample column | Canonical handling |
 | --- | --- |
-| missing\_required | A required cell is empty |
-| invalid\_format | Wrong characters or length (device number, mobile, text fields) |
-| invalid\_national\_code | Checksum failed |
-| unknown\_branch | branch\_code does not exist |
-| inactive\_branch | The branch exists but is inactive |
-| invalid\_status | Value is not one of the four statuses |
-| duplicate\_in\_file | Same device\_number earlier in the file |
-| device\_deleted | A deleted device holds this number |
+| pos_code | device_number, unique terminal business key |
+| branch_code | existing branch code as text, preserving leading zeros |
+| نام شعبه | informational only; never overrides branch_code |
+| نام مشتری | owner_name |
+| شماره همراه | owner_mobile |
+| شماره تماس | contact_phone |
+| شماره حساب | account_number, text |
+| آدرس | address |
+| sum_of_trans | transaction_amount, rials |
+| counts_of_trans | transaction_count, integer |
+| طبقه بندی پایانه | intentionally ignored; not stored as terminal performance or used in calculations |
 
-### Response
+Read numeric identifiers without a fractional suffix; preserve text zeros and simple zero-padded Excel formats. Do not invent lost zeros or accept precision-damaged numeric identifiers. Normalize mobiles before validation, including +9809173094912, 09173094912, and 9173094912 to 09173094912, plus standard international and Persian-digit forms. Invalid nonempty optional values fail a new-terminal row; the sample mobile placeholders are not production-valid data.
 
-HTTP 200 with import\_id, status, total\_rows, created, updated, unchanged, skipped, failed, warnings, duplicate\_of, and errors\_preview (the first 20 errors). The full list is at GET /api/v1/pos/imports/{id}/errors, which also returns an .xlsx error report when format=xlsx: the original row plus an error column, so the Supervisor can fix and re-upload only the failed rows.
+### Row behavior and provenance
 
-### Security
+1. Store the unchanged original under a random safe storage key with checksum; create a durable processing import log in a short separate transaction.
+2. Process business rows and final outcome in one transaction, one savepoint per row. Valid rows survive row-level errors. Registry matching checks the normalized key first: an existing live terminal skips without validating changed source owner/branch details; a new terminal validates all required details and an active branch, creates source=import, and opens history today.
+3. A soft-deleted match fails device_deleted. Duplicate normalized registry keys or activity terminal/period keys later in the same file fail duplicate_in_file. Never auto-create a branch.
+4. Transaction-only unknown terminals fail unknown_device. Exact-period matches update amount/count if changed and otherwise count unchanged; a different overlapping period fails overlapping_period. Transaction imports do not change terminal branch/status.
+5. Combined rows still import activity when the terminal registry component is skipped. A bad activity row rolls back any new terminal/history created by that same row. Existing authoritative branch membership wins; a differing source branch produces a warning, not a transfer.
+6. Store row errors with original row number, original raw values, column, code, and message. Finalize completed, completed_with_errors, or failed based on accepted versus rejected rows. All-skipped/all-unchanged valid files complete successfully. For combined files report registry and activity component counts separately from row outcome counts.
+7. Return import_id, status, row/component counts, warnings, duplicate_of checksum hint, and first 20 errors. Full errors are JSON or XLSX; original file download is Supervisor-only and audited.
+8. If the file transaction unexpectedly rolls back, separately finalize the durable log as failed without retaining false success counters. A crash may leave processing; an explicit operator recovery command marks stale interrupted imports failed. Original files are retained.
 
-- Stored files are never opened by anything except the import and download code; file names are sanitized and the stored name is random.
-- Cell values beginning with =, +, - or @ are stored as plain text. In every generated Excel file (export, error report) such values are prefixed with an apostrophe to prevent formula injection.
-- Only Supervisors can upload, list, view or download imports.
+Templates exist for registry, activity, and combined files. Generated XLSX exports/error reports neutralize formula-like text; uploaded formulas are never evaluated (only cached values are read). Original file storage and all download paths remain confined to IMPORT_STORAGE_DIR. Reupload is safe: existing registry rows skip and identical activity periods remain unchanged.
 
-## 10. POS monthly transactions and productivity
+## 10. POS period transactions and performance
 
-Transaction summaries arrive as a separate Excel import per period, or are entered by hand, and device productivity is always computed from this history at request time. Nothing derived is stored.
+### Period records
 
-### Import
+Each summary holds terminal, inclusive from/to dates, transaction_amount numeric(20,2) in rials, nonnegative integer transaction_count, source/import provenance, and soft-deletion metadata. Periods last at most 366 inclusive days and cannot overlap another live period of the same terminal. Retired terminals accept late records. Only the Supervisor creates/edits/deletes; managers read current-branch terminal history, paginated newest first. Corrections are audited and never rewrite saved follow-up evidence.
 
-- Endpoint: POST /api/v1/pos/imports/transactions, same upload contract, limits, logging, savepoints and error report as section 9. Template: GET /api/v1/pos/imports/templates/transactions.
-- Columns, all required: device\_number, from\_date, to\_date, transaction\_amount.
-- Dates: Excel date cells, or text in YYYY-MM-DD. Text with a year between 1300 and 1500 is treated as a Jalali date (for example 1405/08/25) and converted to Gregorian; the import\_row\_errors raw\_data keeps the original text.
-- Amount: a number or text with thousands separators and Persian digits (stripped and converted); at most 2 decimals; zero or more.
-- The amount unit is whatever the bank exports (assumed rials); the system stores and returns it unchanged and does no currency conversion.
+A transaction upload may specify jalali_year=1405 and jalali_month=7: use 1405/07/01 through 1405/07/30 for every valid row. Derive Esfand's actual last day with calendar validation. Store native Gregorian dates and return Jalali dates. Text business dates use the shared Jalali contract; true Excel date cells are native dates, not guessed text calendars.
 
-### Row rules
+### Query-time performance
 
-| Situation | Result |
+Compute from the total amount of all live summaries wholly contained in the selected inclusive range, without prorating partial overlaps. Count is stored/returned but does not affect classification. Terminal rows have no stored performance field. Imported external classification is ignored even when present in the original provenance file.
+
+| Performance | Rule with initial rial thresholds |
 | --- | --- |
-| device\_number not found among non-deleted devices | Error unknown\_device |
-| to\_date before from\_date, or period longer than 366 days | Error invalid\_period |
-| Negative or non-numeric amount | Error invalid\_amount |
-| Same device, from\_date and to\_date as an existing record | Upsert: updated if the amount differs, unchanged otherwise; the old amount is kept in the audit log |
-| Same device, period overlaps an existing different period | Error overlapping\_period, naming the existing period |
-| Same device and period twice in one file | Error duplicate\_in\_file for the later row |
+| low | total < 200000000 |
+| normal | 200000000 <= total <= 1000000000 |
+| high | total > 1000000000 |
+| no data | no counted summary: null totals/classification and no_data=true |
 
-Retired devices still accept transactions. Transactions never change a device's branch or status.
+One global settings row holds a Supervisor-editable lower/upper pair with 0 <= lower < upper. Edits are atomic, versioned, and audited; later queries use the current pair across all branches. Explicit zero summaries are observed activity and classify low under the initial policy; absent summaries do not become zeros.
 
-### Manual entry and history
+Per-device series and ranking use the same SQL aggregate/classifier. Retain /pos/devices/{id}/productivity and /pos/productivity route names; responses state method=period_total_amount, unit=rials, bounds, thresholds/version, amount/count, coverage/record count, no_data, and latest period end. Default is the last complete Jalali month; maximum range is 24 Jalali months. For explicit multi-month ranges classify the total for that named range, not a monthly average. Filter by performance/no_data, branch, city, and status; paginate with deterministic amount/device ordering. Managers are limited to their own branch.
 
-- The Supervisor can add a record to a device, edit its amount or dates, and soft-delete it. The same overlap and period rules apply.
-- History per device is paged, newest period first, with optional from and to filters. A Branch Manager can read history only for devices in their own branch.
+## 11. POS follow-up and visit workflow
 
-### Productivity
+The Supervisor selects terminals from a performance query and sends them to their owning branches. A branch manager can only assign work received from the Supervisor; managers cannot create independent visits. Low, normal, high, and no-data terminals are selectable. The owning branch must be active and the terminal must not be deleted or retired.
 
-- Productivity is computed on demand over a date range. The default range is the last 6 complete calendar months; the maximum range is 24 months.
-- Only records fully inside the range (from\_date >= range start and to\_date <= range end) are counted; partial overlaps are ignored, not pro-rated.
-- Phase 1 placeholder formula: total transaction\_amount of the counted records divided by the number of calendar months in the range. The response states method average\_monthly\_amount so clients know which formula produced the value.
-- The formula lives in one function, productivity\_expr(range\_start, range\_end), in features/pos/productivity.py and returns a SQL expression. Both productivity endpoints use it, so replacing the formula means changing that one function.
-- A device with no counted records returns productivity null and no\_data true.
-- Per-device endpoint: returns the monthly series (from\_date, to\_date, amount), total, months counted, productivity, and the last transaction period end.
-- Ranking endpoint: lists devices with productivity for a range, filterable by branch\_id, city\_id and status, sortable by productivity ascending or descending, paginated. Each row includes months\_since\_last\_transaction so stale terminals are easy to spot. A Branch Manager is limited to their own branch.
-
-## 11. POS visit workflow
-
-A Branch Manager assigns a POS device to an employee of the same branch, the employee visits and records the outcome, and the completed task is archived read-only. A device can have only one open visit task at a time.
-
-### Lifecycle
+### Lifecycle and roles
 
 | From | Action | To | Who |
 | --- | --- | --- | --- |
-| (new) | Assign | assigned | Branch Manager of the device's branch, Supervisor |
-| assigned | Reassign to another employee | assigned | Branch Manager of the branch, Supervisor |
-| assigned | Complete | completed | The assigned employee only |
-| assigned | Cancel with a reason | cancelled | Branch Manager of the branch, Supervisor; also the system on device transfer |
-| completed | Correct result, tags or description | completed | Supervisor only, audited |
+| new | Dispatch terminal and selected period to its owning branch | pending_assignment | Supervisor only |
+| pending_assignment | Assign an eligible same-branch employee | assigned | Owning branch manager only |
+| assigned | Reassign same-branch employee | assigned | Owning branch manager only |
+| pending_assignment or assigned | Cancel with reason | cancelled | Supervisor, owning branch manager, or system on transfer |
+| assigned | Complete with result/tags | completed | Assigned employee only |
+| completed | Correct result/tags/description | completed | Supervisor only, audited |
 
-Completed and cancelled tasks are the archive: they cannot be reassigned, cancelled or completed again (409 visit\_archived). An overdue task is not a stored state; it is a task with status assigned and due\_date before today.
+One open work item per terminal covers both pending_assignment and assigned; completed/cancelled are archived. Pending work has no assignee. A branch without a manager can receive dispatch and retain it in queue until an eligible manager is appointed. Branch deactivation blocks new dispatch/assignment but current assignees can complete existing work.
 
-### Assign
+### Immutable selection snapshot
 
-- Request: pos\_device\_id, assigned\_to, due\_date (optional, not before today), instructions (optional, up to 2000 characters).
-- Rules: the device must be non-deleted and not retired (device\_retired); the assignee must be an active user with role employee in the device's current branch; a Branch Manager can only assign devices of their own branch; the device must have no open task (409 device\_has\_open\_visit).
-- Effects: create the task with branch\_id copied from the device, notify the employee with event pos\_visit\_assigned, write an audit row.
-- Bulk assign: the same request with pos\_device\_ids (up to 200) returns one result per device (created or an error code), so one bad device does not block the rest. Each device is processed in its own savepoint.
+At dispatch the server saves selected period, total amount/count (null for no data), no_data, calculated classification, both thresholds, policy version, rial unit, and calculation method alongside the task. Compute all dispatch totals and policy from one consistent database view. Clients cannot supply/alter this evidence. Later activity imports, settings edits, reassignment, transfer, and completed-result corrections never change it. Current performance stays query-time; the snapshot explains why the Supervisor selected the terminal.
 
-### Reassign and cancel
+### Assignment, execution, and archive
 
-- Reassign changes assigned\_to to another eligible employee of the same branch. The previous assignee gets pos\_visit\_unassigned and the new one gets pos\_visit\_assigned.
-- Cancel requires cancel\_reason (up to 255 characters), stores cancelled\_at and cancelled\_by, and notifies the assignee with pos\_visit\_cancelled.
+- Dispatch accepts at most 200 terminal IDs with one selected period and returns one success/error per terminal. Manager assignment accepts pending visit IDs, not arbitrary terminal IDs; bulk assignment allows at most 200 pending IDs with row savepoints.
+- Assignee must be active, role employee, and in the same active branch. Store assigning manager/time, optional due date not before today, and instructions up to 2,000 characters. Employees see no pending branch queue.
+- Employees list only their own tasks (default assigned), ordered by due date with nulls last. Detail includes terminal contact/address, manager instructions, immutable evidence, and the latest completed visit's tags.
+- Completion requires result visited, owner_unavailable, shop_closed, or device_not_found; unique active tags; optional description up to 2,000 characters; visited_at defaults now, not future or before assignment. Only the assignee completes; another employee gets 404.
+- Seed tags: broken_device, new_service_requested, maintenance_required. Tags never automatically change terminal status. Completion archives the task; only the Supervisor can correct result/tags/description with audit.
+- Reassignment notifies previous/new employees and changes access immediately. Cancellation requires a nonempty reason up to 255 characters. Transfer cancels pending/assigned work with device_transferred, preserving original task branch/evidence.
+- Assigned tasks block employee deactivation/deletion/role/branch changes with user_has_open_tasks and task count; reassign/cancel first. Archived work preserves historical identities.
 
-### Execute (employee)
+### Visibility, reports, and concurrency
 
-- Employees list their own tasks, default filter status assigned, ordered by due\_date ascending with nulls last. Filters: status, overdue, due\_from, due\_to. The task detail includes the device number, owner name and mobile, shop name, address, branch, instructions, and the tags of the device's latest completed visit.
-- Complete request: result (required), tag\_codes (zero or more active tag codes, no duplicates), description (optional, up to 2000 characters), visited\_at (optional, default now, not in the future).
-- result values: visited, owner\_unavailable, shop\_closed, device\_not\_found.
-- Tags available in Phase 1: broken\_device, new\_service\_requested, maintenance\_required. They are stored in pos\_visit\_tag\_links when the task is completed.
-- Effects: status completed, completed\_at set, tags saved, assigner notified with pos\_visit\_completed, audit written. Only the assigned employee can complete; anyone else gets 404.
-- Tags never change the device status automatically. Managers can filter visits by tag to follow up.
+Supervisors see all work, managers their branch queue/history, employees only their own visits. Filter by state, archive, overdue, assignee, terminal, branch, result, tags, and dates. Overdue means assigned with a due date before today; pending is counted separately. Reports apply scope before counting.
 
-### Listing and reports
-
-- Visit list filters: status, archived (true means completed or cancelled), assigned\_to, branch\_id, pos\_device\_id, result, tag, overdue, assigned and completed date ranges. Scope follows section 3.
-- The summary report (section 12) counts open, overdue, completed in the last 30 days, visits by result, and tag counts, per role scope.
-
-### Concurrency
-
-- Assign, reassign, cancel and complete lock the visit row (SELECT FOR UPDATE), and device transfer locks the device row first, so a transfer and a completion cannot interleave.
-- The partial unique index on open visits per device is the final guard against two managers assigning the same device at once; the loser gets 409 device\_has\_open\_visit.
+Use the existing administration advisory lock for POS lifecycle mutations and related user/org changes before row locks; recheck current actor/assignee eligibility under lock. Follow consistent user/branch/device/visit ordering. Transaction-only imports lock device IDs in sorted order; never take the lifecycle lock after device locks. A partial unique index over both open states is the final duplicate-work guard; exclusion constraints protect transaction/history periods. Snapshot guards reject later evidence edits. Transfer versus completion and assignment versus employee lifecycle changes must be tested with concurrent database connections.
 
 ## 12. API catalog
 
@@ -796,7 +766,9 @@ All paths are under /api/v1 and use JSON with snake\_case fields. Role letters: 
 | PATCH | /pos/transactions/{id} | S | Edit a record |
 | DELETE | /pos/transactions/{id} | S | Soft delete a record |
 | GET | /pos/devices/{id}/productivity | S, M | Series and productivity of one device |
-| GET | /pos/productivity | S, M | Productivity ranking of devices |
+| GET | /pos/productivity | S, M | Query-time amount classification/ranking |
+| GET | /pos/performance-settings | S, M | Read current global thresholds |
+| PATCH | /pos/performance-settings | S | Update/audit global thresholds |
 
 ### POS imports
 
@@ -806,6 +778,8 @@ All paths are under /api/v1 and use JSON with snake\_case fields. Role letters: 
 | GET | /pos/imports/templates/transactions | S | Download the transactions template |
 | POST | /pos/imports/devices | S | Upload a devices file |
 | POST | /pos/imports/transactions | S | Upload a transactions file |
+| POST | /pos/imports/combined | S | Create-or-skip registry and upsert activity per row |
+| GET | /pos/imports/templates/combined | S | Download combined template |
 | GET | /pos/imports | S | List import logs (filter type, status, date, user) |
 | GET | /pos/imports/{id} | S | View one import log |
 | GET | /pos/imports/{id}/errors | S | Row errors as JSON, or .xlsx with format=xlsx |
@@ -815,11 +789,12 @@ All paths are under /api/v1 and use JSON with snake\_case fields. Role letters: 
 
 | Method | Path | Roles | Purpose |
 | --- | --- | --- | --- |
-| POST | /pos/visits | S, M | Assign one device |
-| POST | /pos/visits/bulk-assign | S, M | Assign up to 200 devices |
+| POST | /pos/visits/dispatch | S | Select up to 200 terminals/period and route to branches |
+| POST | /pos/visits/{id}/assign | M | Assign one pending work item to an employee |
+| POST | /pos/visits/bulk-assign | M | Assign up to 200 pending visit IDs |
 | GET | /pos/visits | S, M, E | List visits (scoped) |
 | GET | /pos/visits/{id} | S, M, E | View a visit |
-| POST | /pos/visits/{id}/reassign | S, M | Change the assignee |
+| POST | /pos/visits/{id}/reassign | M | Change the same-branch assignee |
 | POST | /pos/visits/{id}/cancel | S, M | Cancel with a reason |
 | POST | /pos/visits/{id}/complete | E | Record result, tags, description |
 | PATCH | /pos/visits/{id} | S | Correct a completed visit |
@@ -840,72 +815,27 @@ All paths are under /api/v1 and use JSON with snake\_case fields. Role letters: 
 | GET | /health | Public | Liveness |
 | GET | /health/ready | Public | Readiness, checks the database |
 
-The summary returns: devices by status; devices per branch (Supervisor only); open, overdue and completed-in-30-days visit counts; visits by result; tag counts for the last 30 days; devices with no transaction in the last 3 months. An Employee receives only their own visit counts.
+The summary returns: devices by status; devices per branch (Supervisor only); pending-assignment, assigned, overdue and completed-in-30-days visit counts; visits by result; tag counts for the last 30 days; devices with no transaction in the last 3 months. An Employee receives only their own visit counts.
 
-### Payload examples
+### POS payload examples
 
-Login:
+Business dates follow the existing Jalali API contract. Authentication examples and current SMS/cookie behavior are documented in docs/authentication.md.
 
-```json
-POST /auth/login
-{ "mobile": "09121234567", "password": "s3cretPass" }
+```text
+POST /pos/visits/dispatch   (Supervisor)
+{ "pos_device_ids": ["<terminal-uuid>"], "jalali_year": 1405, "jalali_month": 7 }
 
-200
-{
-  "access_token": "eyJ...", "refresh_token": "Xk3...", "token_type": "bearer",
-  "expires_in": 900,
-  "user": { "id": "...", "first_name": "Ali", "last_name": "Rezaei", "role": "employee",
-            "branch": { "id": "...", "code": "TEH-01", "name": "Valiasr" },
-            "must_change_password": false }
-}
+POST /pos/visits/<visit-uuid>/assign   (owning branch manager)
+{ "assigned_to": "<employee-uuid>", "due_date": "1405/09/01", "instructions": "Check terminal usage" }
+
+POST /pos/visits/<visit-uuid>/complete   (assigned employee)
+{ "result": "visited", "tag_codes": ["maintenance_required"], "description": "Service follow-up required" }
+
+PATCH /pos/performance-settings   (Supervisor)
+{ "lower_threshold": "200000000.00", "upper_threshold": "1000000000.00" }
 ```
 
-Create a POS device:
-
-```json
-POST /pos/devices
-{
-  "device_number": "10045821", "owner_name": "Reza Karimi", "owner_mobile": "09123456789",
-  "owner_national_code": "0012345679", "shop_name": "Karimi Market",
-  "address": "Tehran, Valiasr St, No. 12", "branch_id": "...", "status": "active"
-}
-```
-
-Import result:
-
-```json
-200
-{
-  "import_id": "...", "status": "completed_with_errors", "total_rows": 120,
-  "created": 90, "updated": 12, "unchanged": 10, "skipped": 0, "failed": 8,
-  "warnings": [], "duplicate_of": null,
-  "errors_preview": [
-    { "row_number": 14, "column_name": "branch_code", "error_code": "unknown_branch",
-      "message": "Branch code TEH-99 does not exist" }
-  ]
-}
-```
-
-Assign and complete a visit:
-
-```json
-POST /pos/visits
-{ "pos_device_id": "...", "assigned_to": "...", "due_date": "2026-12-01", "instructions": "Check the paper roll" }
-
-POST /pos/visits/{id}/complete
-{ "result": "visited", "tag_codes": ["maintenance_required"],
-  "description": "Printer jams often", "visited_at": "2026-11-20T09:30:00Z" }
-```
-
-Bulk assign response:
-
-```json
-200
-{ "results": [
-  { "pos_device_id": "...", "status": "created", "visit_id": "..." },
-  { "pos_device_id": "...", "status": "error", "error_code": "device_has_open_visit" }
-] }
-```
+For transaction or combined uploads, send file plus jalali_year=1405 and jalali_month=7 as multipart fields. Do not send client-calculated selection snapshots. All examples use synthetic IDs and text.
 
 ## 13. Cross-cutting rules
 
@@ -956,18 +886,19 @@ Every error uses one JSON shape. Messages are English; clients map the stable co
 
 - core/text.py provides: digit normalizer (Persian and Arabic digits to ASCII), Persian character normalizer (ي to ی, ك to ک, zero-width characters removed), mobile normalizer and validator, national code validator, and a search-key function used for case and variant-insensitive matching.
 - Database timestamps are UTC. The business day (what today means for defaults and validations) is computed in the APP\_TIMEZONE setting, default Asia/Tehran.
-- Dates are stored as Gregorian. Jalali appears only at the edges: the import parser accepts it, and clients display it.
+- Dates persist as native Gregorian dates and UTC timestamps; every business API input/output, including POS periods, snapshots, filters and audit values, follows the shared Jalali contract. Protocol/token dates retain standard formats.
 
 ### Notification events (in-app)
 
 | event\_type | Recipient | Trigger |
 | --- | --- | --- |
+| pos\_visit\_dispatched | Current branch manager, when present | Supervisor dispatch to owning branch |
 | pos\_visit\_assigned | Assigned employee | Assign, bulk assign, reassign to them |
 | pos\_visit\_unassigned | Previous employee | Reassign away |
-| pos\_visit\_cancelled | Assigned employee | Cancel, or automatic cancel on device transfer |
+| pos\_visit\_cancelled | Assignee, or branch manager for pending work when present | Cancel or automatic transfer cancellation |
 | pos\_visit\_completed | The user who assigned it | Employee completes |
 
-Each notification stores a title, an optional body and a payload with the visit and device ids, so the mobile app can deep-link. Push and external channels are added later behind the channel column without changing callers: services call notify(session, recipient\_id, event\_type, payload).
+Each notification stores a title, an optional body and related visit/device IDs for web links, which always recheck current resource authorization. Push and external channels are added later behind the channel column without changing callers: services call notify(session, recipient\_id, event\_type, payload).
 
 ### Security
 
@@ -1005,8 +936,8 @@ Up to 50,000 POS devices, 2 million transaction rows and 100 users on one Postgr
 6. Users: CRUD, guards, reset password.
 7. POS devices: CRUD, status, history tables, transfer, change owner, delete and restore, export.
 8. Import engine and devices import, templates, import logs and error report.
-9. Monthly transactions: manual entry, import, history, productivity.
-10. POS visits and tags: assign, bulk assign, reassign, cancel, complete, correction, notifications.
+9. Monthly transactions: amount/count manual entry and import, global threshold settings, history and query-time performance.
+10. POS visits and tags: Supervisor dispatch and snapshots, branch pending queue, manager assign/bulk assign, reassign, cancel, complete, correction, notifications.
 11. Reports summary and audit log endpoint.
 12. Hardening: nginx limits, indexes review with EXPLAIN on 50,000 devices, seed script, README with run instructions.
 
@@ -1019,10 +950,12 @@ Up to 50,000 POS devices, 2 million transaction rows and 100 users on one Postgr
 - [ ] A device is created manually with initial branch and owner history rows; transfer and change-owner produce non-overlapping history.
 - [ ] Transferring a device cancels its open visit task, notifies the employee, and keeps past visits on the device.
 - [ ] Uploading a 120-row devices file with 8 bad rows saves 112 rows, logs counts, and returns an error report that can be downloaded as .xlsx.
-- [ ] Re-uploading the same file changes nothing (all rows unchanged).
+- [ ] Re-uploading registry rows skips existing terminals; identical activity periods are unchanged, changed amount/count is updated and audited.
 - [ ] Overlapping transaction periods for one device are rejected at both import and manual entry.
-- [ ] Productivity for a device and for the ranking uses one SQL function and returns null with no\_data for devices without records.
-- [ ] A device cannot have two open visit tasks, even with two simultaneous assign requests.
+- [ ] Per-device/ranking classification uses one shared SQL calculation, exact rial boundaries and configurable global policy; missing records remain no_data and explicit zero is low under the initial policy.
+- [ ] A terminal cannot have two pending/assigned work items even with concurrent dispatches; only the Supervisor dispatches and only the owning manager assigns employees.
+- [ ] Dispatch snapshots survive transaction corrections, policy edits, assignment, and transfer unchanged.
+- [ ] Monthly imports derive actual Jalali bounds and save both amount and count; external classification is ignored.
 - [ ] An employee completes only their own task, with a result and zero or more tags; the task becomes read-only.
 - [ ] Every write appears in audit\_logs; no endpoint or database privilege allows physical deletion of business rows.
 - [ ] Integration tests cover each rule above against a real PostgreSQL instance.
@@ -1033,9 +966,9 @@ Up to 50,000 POS devices, 2 million transaction rows and 100 users on one Postgr
 | --- | --- | --- |
 | A1 | Mobile numbers are Iranian (09XXXXXXXXX) and national codes use the Iranian checksum | Auth, users, POS owners |
 | A2 | Imports run synchronously with a 5,000-row limit instead of a background job | Section 9 |
-| A3 | Device statuses (active, inactive, under\_maintenance, retired) and POS visit results (visited, owner\_unavailable, shop\_closed, device\_not\_found) are my proposals; the requirements name no values | Sections 8, 11 |
+| A3 | Operational statuses and visit results remain as defined in sections 8/11; calculated performance is separate | Sections 8, 11 |
 | A4 | Excel files may carry Jalali dates and amounts are in rials, stored unchanged | Section 10 |
-| A5 | One open visit task per device at a time | Section 11 |
+| A5 | One open pending-or-assigned follow-up per device at a time | Section 11 |
 | A6 | The branch manager is derived from the users table; branches have no manager column | Sections 4, 6 |
 | A7 | Only employees can be assigned POS visits; managers assign but do not visit | Section 11 |
 | A8 | Tags never change the device status automatically | Section 11 |
@@ -1044,7 +977,5 @@ Up to 50,000 POS devices, 2 million transaction rows and 100 users on one Postgr
 
 ### Open questions
 
-- Should Branch Managers be allowed to create or edit POS devices of their own branch?
-- What is the final productivity formula, and should it weigh transaction count as well as amount?
 - Do managers need overdue-task notifications? They require a scheduled job, which Phase 1 does not include.
 - Should error messages also be returned in Persian, or is a stable code enough for the clients?
