@@ -29,6 +29,23 @@ async def test_migration_tables_and_actor_fks(schema):
             "notifications",
             "import_logs",
             "import_row_errors",
+            "occupations",
+            "banking_products",
+            "leads",
+            "campaigns",
+            "campaign_leads",
+            "campaign_quota_overrides",
+            "visits",
+            "visit_attempts",
+            "customer_drafts",
+            "customers",
+            "product_sales",
+            "sale_submissions",
+            "sale_decisions",
+            "customer_products",
+            "retention_schedules",
+            "retention_tasks",
+            "score_transactions",
         }
         for name in ("cities", "branches", "users"):
             keys = await connection.run_sync(
@@ -103,6 +120,14 @@ async def test_unique_manager_and_pending_challenge(schema):
         "DELETE FROM pos_device_owner_history",
         "DELETE FROM pos_monthly_transactions",
         "DELETE FROM pos_visit_tag_links",
+        "DELETE FROM leads",
+        "DELETE FROM campaigns",
+        "UPDATE visit_attempts SET result='pending'",
+        "DELETE FROM visit_attempts",
+        "UPDATE sale_submissions SET proof_text='tampered'",
+        "UPDATE sale_decisions SET reason='tampered'",
+        "UPDATE score_transactions SET points=0",
+        "TRUNCATE score_transactions",
     ],
 )
 async def test_runtime_forbidden_privileges(schema, sql):

@@ -3,7 +3,9 @@
 Python 3.12 / FastAPI / PostgreSQL 16. This phase serves a web frontend and implements
 organization, authentication, and POS management APIs. See [POS management](docs/pos.md)
 for English XLSX headers, monthly activity imports, global rial thresholds,
-Supervisor dispatch, branch assignment, and employee visits.
+Supervisor dispatch, branch assignment, and employee visits. See
+[campaigns and sales](docs/marketing.md) for lead entry, campaign visits,
+Supervisor verification, customer profiles and generated retention tasks.
 `requirement.txt` contains product requirements, not pip dependencies.
 
 ## Local setup

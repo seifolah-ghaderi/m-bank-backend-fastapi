@@ -1,5 +1,24 @@
 from app.models.audit import AuditLog
 from app.models.base import Base
+from app.models.marketing import (
+    BankingProduct,
+    Campaign,
+    CampaignLead,
+    CampaignQuotaOverride,
+    CampaignVisit,
+    Customer,
+    CustomerDraft,
+    CustomerProduct,
+    Lead,
+    Occupation,
+    ProductSale,
+    RetentionSchedule,
+    RetentionTask,
+    SaleDecision,
+    SaleSubmission,
+    ScoreTransaction,
+    VisitAttempt,
+)
 from app.models.org import Branch, City
 from app.models.pos import (
     ImportLog,
@@ -19,6 +38,23 @@ from app.models.user import LoginChallenge, RefreshToken, User
 __all__ = [
     "AuditLog",
     "Base",
+    "BankingProduct",
+    "Lead",
+    "Campaign",
+    "CampaignLead",
+    "CampaignQuotaOverride",
+    "CampaignVisit",
+    "Customer",
+    "CustomerDraft",
+    "CustomerProduct",
+    "ProductSale",
+    "RetentionSchedule",
+    "RetentionTask",
+    "SaleDecision",
+    "SaleSubmission",
+    "ScoreTransaction",
+    "VisitAttempt",
+    "Occupation",
     "Branch",
     "City",
     "LoginChallenge",

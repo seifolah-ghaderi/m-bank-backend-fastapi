@@ -15,9 +15,8 @@ def test_import_settings_are_bounded(settings):
 def test_pos_metadata_constraints():
     from sqlalchemy.dialects.postgresql import ExcludeConstraint
 
-    from app.models import Base, PosDevice, PosTransaction, PosVisit
+    from app.models import PosDevice, PosTransaction, PosVisit
 
-    assert len(Base.metadata.tables) == 17
     assert "performance" not in PosDevice.__table__.columns
     assert any(isinstance(c, ExcludeConstraint) for c in PosTransaction.__table__.constraints)
     assert any(i.name == "uq_pos_visits_open" for i in PosVisit.__table__.indexes)

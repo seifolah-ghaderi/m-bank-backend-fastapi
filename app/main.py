@@ -45,6 +45,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     from app.features.audit.router import router as audit_router
     from app.features.auth.router import router as auth_router
+    from app.features.marketing.router_campaigns import router as campaigns_router
+    from app.features.marketing.router_catalog import router as catalog_router
+    from app.features.marketing.router_customers import router as customers_router
+    from app.features.marketing.router_leads import router as leads_router
+    from app.features.marketing.router_retention import router as retention_router
+    from app.features.marketing.router_sales import router as sales_router
     from app.features.notifications.router import router as notifications_router
     from app.features.org.router import router as org_router
     from app.features.pos.router_devices import router as devices_router
@@ -57,6 +63,12 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     for router in (
         auth_router,
+        catalog_router,
+        campaigns_router,
+        sales_router,
+        customers_router,
+        retention_router,
+        leads_router,
         org_router,
         users_router,
         audit_router,
