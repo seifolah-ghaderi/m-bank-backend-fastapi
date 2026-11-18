@@ -65,6 +65,10 @@ The service SHALL normalize Persian and Arabic digits to ASCII, Arabic variants 
 - **WHEN** a supplied national code has an invalid checksum or all identical digits
 - **THEN** the service returns 422 with code `invalid_national_code`.
 
+#### Scenario: Local zero and international prefix variants
+- **WHEN** the mobile is `+9809173094912`, `09173094912`, or `9173094912`, including Persian/Arabic digit equivalents
+- **THEN** normalization yields `09173094912` before validation and lookup; standard `+98`, `0098`, and `98` forms remain supported.
+
 ### Requirement: Time conventions
 The service SHALL persist timestamps in UTC and dates in native database date types, calculate business dates in `APP_TIMEZONE` defaulting to `Asia/Tehran`, and expose all business dates and date-times using the Persian Jalali calendar. Standard protocol dates and numeric token expiry claims SHALL retain their protocol formats.
 
