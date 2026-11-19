@@ -1,5 +1,6 @@
 from app.models.audit import AuditLog
 from app.models.base import Base
+from app.models.crm_imports import CrmImport, CrmImportRow
 from app.models.marketing import (
     BankingProduct,
     Campaign,
@@ -38,6 +39,8 @@ from app.models.user import LoginChallenge, RefreshToken, User
 __all__ = [
     "AuditLog",
     "Base",
+    "CrmImport",
+    "CrmImportRow",
     "BankingProduct",
     "Lead",
     "Campaign",

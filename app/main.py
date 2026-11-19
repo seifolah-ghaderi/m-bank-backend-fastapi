@@ -45,6 +45,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
 
     from app.features.audit.router import router as audit_router
     from app.features.auth.router import router as auth_router
+    from app.features.crm_imports.router import router as crm_imports_router
     from app.features.marketing.router_campaigns import router as campaigns_router
     from app.features.marketing.router_catalog import router as catalog_router
     from app.features.marketing.router_customers import router as customers_router
@@ -76,6 +77,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         transactions_router,
         settings_router,
         imports_router,
+        crm_imports_router,
         notifications_router,
         visits_router,
         reports_router,

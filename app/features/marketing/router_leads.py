@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Request
 from app.core.deps import Session, Supervisor
 from app.core.pagination import PageParams
 from app.features.marketing import leads
-from app.schemas.marketing import LeadCreate, LeadFilters, LeadOut
+from app.schemas.marketing import LeadBranchAssignment, LeadCreate, LeadFilters, LeadOut
 
 router = APIRouter(prefix="/leads", tags=["Leads"])
 Page = Annotated[PageParams, Depends()]
@@ -21,8 +21,11 @@ async def list_leads(
     filters: Filters,
     include_archived: bool = False,
     archived: bool | None = None,
+    unassigned: bool = False,
 ):
-    result = await leads.list_leads(session, page, filters, include_archived, archived)
+    result = await leads.list_leads(
+        session, page, filters, include_archived, archived, unassigned=unassigned
+    )
     result["items"] = [LeadOut.model_validate(item) for item in result["items"]]
     return result
 
@@ -47,3 +50,10 @@ async def archive(lead_id: UUID, request: Request, session: Session, user: Super
 @router.post("/{lead_id}/restore")
 async def restore(lead_id: UUID, request: Request, session: Session, user: Supervisor) -> LeadOut:
     return await leads.archive_lead(session, lead_id, user, request, archive=False)
+
+
+@router.post("/{lead_id}/assign-branch")
+async def assign_branch(
+    lead_id: UUID, body: LeadBranchAssignment, request: Request, session: Session, user: Supervisor
+) -> LeadOut:
+    return await leads.assign_branch(session, lead_id, body.branch_id, user, request)

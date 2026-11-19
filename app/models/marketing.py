@@ -38,7 +38,7 @@ class BankingProduct(BaseMixin, Base):
 class Lead(BaseMixin, Base):
     __tablename__ = "leads"
 
-    branch_id: Mapped[UUID] = mapped_column(ForeignKey("branches.id"), index=True)
+    branch_id: Mapped[UUID | None] = mapped_column(ForeignKey("branches.id"), index=True)
     city_id: Mapped[UUID] = mapped_column(ForeignKey("cities.id"), index=True)
     occupation_id: Mapped[UUID | None] = mapped_column(ForeignKey("occupations.id"), index=True)
     first_name: Mapped[str] = mapped_column(String(100))

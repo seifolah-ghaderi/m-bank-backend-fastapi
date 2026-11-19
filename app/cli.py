@@ -112,6 +112,10 @@ async def run(args):
         elif args.command == "purge-tokens":
             tokens, challenges = await purge_tokens(database)
             print(f"Purged {tokens} old refresh tokens and {challenges} old challenges.")
+        elif args.command == "process-lead-imports":
+            from app.features.crm_imports import worker
+
+            await worker.run(database, settings, once=args.once)
         else:
             import json
 
@@ -139,6 +143,8 @@ def main():
     create.add_argument("--last-name", required=True)
     create.add_argument("--force", action="store_true")
     commands.add_parser("purge-tokens")
+    lead_worker = commands.add_parser("process-lead-imports")
+    lead_worker.add_argument("--once", action="store_true")
     recover = commands.add_parser("fail-stale-pos-imports")
     recover.add_argument("--older-than-minutes", type=int, required=True)
     recover.add_argument("--apply", action="store_true")

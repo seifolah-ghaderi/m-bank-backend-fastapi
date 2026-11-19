@@ -46,8 +46,7 @@ class BankingProductOut(OccupationOut):
     score_value: int
 
 
-class LeadCreate(Input):
-    branch_id: UUID
+class LeadFields(Input):
     city_id: UUID
     occupation_id: UUID | None = None
     first_name: Name
@@ -59,6 +58,14 @@ class LeadCreate(Input):
     additional_info: str | None = Field(None, max_length=4000)
 
 
+class LeadCreate(LeadFields):
+    branch_id: UUID
+
+
+class LeadBranchAssignment(Input):
+    branch_id: UUID
+
+
 class LeadFilters(Input):
     branch_id: UUID | None = None
     city_id: UUID | None = None
@@ -67,7 +74,7 @@ class LeadFilters(Input):
 
 
 class LeadOut(MetadataOut):
-    branch_id: UUID
+    branch_id: UUID | None
     city_id: UUID
     occupation_id: UUID | None
     first_name: str

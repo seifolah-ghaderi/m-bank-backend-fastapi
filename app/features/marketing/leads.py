@@ -3,6 +3,7 @@ from sqlalchemy import func, select
 from app.core import dates
 from app.core.audit import record
 from app.core.errors import DomainError
+from app.core.lifecycle import active_branch, lifecycle_actor
 from app.core.pagination import paginate
 from app.core.text import normalize_text
 from app.core.validation import input_values
@@ -19,8 +20,10 @@ def filter_leads(statement, filters):
     return statement
 
 
-async def list_leads(session, page, filters, include_archived, archived):
+async def list_leads(session, page, filters, include_archived, archived, *, unassigned=False):
     statement = filter_leads(select(Lead), filters)
+    if unassigned:
+        statement = statement.where(Lead.branch_id.is_(None))
     if archived is True:
         statement = statement.where(Lead.archived_at.is_not(None))
     elif archived is False or not include_archived:
@@ -104,4 +107,32 @@ async def create_lead(session, body, user, request):
         after={"branch_id": lead.branch_id},
         request=request,
     )
+    return lead
+
+
+async def assign_branch(session, lead_id, branch_id, user, request):
+    actor = await lifecycle_actor(session, user, "supervisor")
+    lead = await session.scalar(select(Lead).where(Lead.id == lead_id).with_for_update())
+    if lead is None:
+        raise DomainError(404, "not_found")
+    if lead.archived_at is not None:
+        raise DomainError(409, "lead_archived")
+    if lead.branch_id == branch_id:
+        return lead
+    if lead.branch_id is not None:
+        raise DomainError(409, "lead_branch_already_assigned")
+    await active_branch(session, branch_id)
+    lead.branch_id = branch_id
+    lead.updated_by = actor.id
+    record(
+        session,
+        actor,
+        "assign_branch",
+        "leads",
+        lead.id,
+        before={"branch_id": None},
+        after={"branch_id": branch_id},
+        request=request,
+    )
+    await session.flush()
     return lead

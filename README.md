@@ -5,7 +5,8 @@ organization, authentication, and POS management APIs. See [POS management](docs
 for English XLSX headers, monthly activity imports, global rial thresholds,
 Supervisor dispatch, branch assignment, and employee visits. See
 [campaigns and sales](docs/marketing.md) for lead entry, campaign visits,
-Supervisor verification, customer profiles and generated retention tasks.
+Supervisor verification, customer profiles and generated retention tasks. See
+[CRM spreadsheet imports](docs/imports.md) for city, branch, and lead uploads.
 `requirement.txt` contains product requirements, not pip dependencies.
 
 ## Local setup
