@@ -31,6 +31,13 @@ Five wrong passwords lock the account for fifteen minutes. Errors use stable cod
 `invalid_sms_code` (401), `sms_rate_limited` (429), and `sms_unavailable` (503).
 Locked/rate-limited responses include retry seconds in `error.details`.
 
+## Test protected endpoints in Swagger UI
+
+Open `/docs`, click **Authorize**, and paste the raw `access_token` from
+`POST /api/v1/auth/verify-sms` into **BearerAuth**. Swagger adds the `Bearer`
+prefix automatically. Try `GET /api/v1/auth/me` to confirm the token works.
+If it has expired, obtain a fresh access token and authorize again.
+
 ## Browser session lifecycle
 
 After reload, call `GET /auth/csrf` with the refresh cookie and allowed Origin. It

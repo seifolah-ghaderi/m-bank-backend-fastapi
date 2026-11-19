@@ -3,6 +3,7 @@ from typing import Annotated
 from uuid import UUID
 
 from fastapi import Depends, Request
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +13,10 @@ from app.core.security import decode_access
 from app.models import User
 
 Session = Annotated[AsyncSession, Depends(get_session, scope="function")]
+BearerCredentials = Annotated[
+    HTTPAuthorizationCredentials | None,
+    Depends(HTTPBearer(auto_error=False, scheme_name="BearerAuth", bearerFormat="JWT")),
+]
 
 
 @dataclass(frozen=True)
@@ -40,11 +45,10 @@ def eligible(user):
         raise DomainError(401, "account_disabled")
 
 
-async def current_user(request: Request, session: Session):
-    header = request.headers.get("Authorization", "")
-    if not header.lower().startswith("bearer "):
+async def current_user(request: Request, session: Session, credentials: BearerCredentials):
+    if credentials is None:
         raise DomainError(401, "invalid_credentials")
-    user_id = decode_access(request.app.state.settings, header[7:])
+    user_id = decode_access(request.app.state.settings, credentials.credentials)
     user = await session.scalar(select(User).where(User.id == user_id))
     eligible(user)
     allowed = {"/api/v1/auth/me", "/api/v1/auth/change-password", "/api/v1/auth/logout"}

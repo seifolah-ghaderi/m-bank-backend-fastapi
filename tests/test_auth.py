@@ -225,3 +225,21 @@ async def test_pending_challenge_invalidated_by_account_changes(api, change):
         "/api/v1/auth/verify-sms", json={"challenge_id": first["challenge_id"], "code": "123"}
     )
     assert verified.status_code == 401
+
+
+async def test_swagger_declares_bearer_auth_for_protected_endpoints(api):
+    spec = (await api.client.get("/openapi.json")).json()
+    assert spec["components"]["securitySchemes"]["BearerAuth"] == {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+    }
+    me_path = "/api/v1/auth/me"
+    assert spec["paths"][me_path]["get"]["security"] == [{"BearerAuth": []}]
+    assert "security" not in spec["paths"]["/api/v1/auth/verify-sms"]["post"]
+
+    for headers in ({}, {"Authorization": "Basic test"}, {"Authorization": "Bearer invalid"}):
+        response = await api.client.get(me_path, headers=headers)
+        assert response.status_code == 401
+        assert response.json()["error"]["code"] == "invalid_credentials"
+    assert (await api.client.get(me_path, headers=api.headers["supervisor"])).status_code == 200
