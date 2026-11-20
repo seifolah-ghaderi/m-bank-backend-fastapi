@@ -1,10 +1,14 @@
 import asyncio
 import hashlib
+import logging
 from collections import Counter
+from datetime import timedelta
 from itertools import batched
 from types import SimpleNamespace
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
+from sqlalchemy.exc import DBAPIError
+from sqlalchemy.exc import TimeoutError as DatabaseTimeout
 from starlette.concurrency import run_in_threadpool
 
 from app.core import dates
@@ -15,6 +19,9 @@ from app.models import CrmImport, CrmImportRow
 
 CHUNK_SIZE = 500
 WORKER_LOCK = 72851902
+POLL_SECONDS = 2
+RETRY_DELAYS = (timedelta(seconds=5), timedelta(seconds=30))
+logger = logging.getLogger(__name__)
 
 
 def read_source(settings, job):
@@ -26,18 +33,24 @@ def read_source(settings, job):
 
 
 async def next_job(database):
+    now = dates.now()
     async with transaction(database) as session:
         job = await session.scalar(
             select(CrmImport)
-            .where(CrmImport.kind == "leads", CrmImport.status.in_(("queued", "processing")))
+            .where(
+                CrmImport.kind == "leads",
+                CrmImport.status.in_(("queued", "processing")),
+                or_(CrmImport.next_attempt_at.is_(None), CrmImport.next_attempt_at <= now),
+            )
             .order_by(CrmImport.created_at, CrmImport.id)
             .limit(1)
         )
         if job is None:
             return None
         job.status = "processing"
+        job.next_attempt_at = None
         if job.started_at is None:
-            job.started_at = dates.now()
+            job.started_at = now
         return job
 
 
@@ -46,15 +59,9 @@ async def process_chunk(database, job_id, rows):
         job = await history.get_log(session, job_id)
         actor = SimpleNamespace(id=job.created_by, role="supervisor")
         counts = Counter()
-        for number, values, error in rows:
-            warnings = []
-            if error is None:
-                try:
-                    outcome, warnings = await leads.import_lead(session, actor, job.id, values)
-                except DomainError as rejection:
-                    error = rejection
-            if error is not None:
-                outcome = "failed"
+        for number, outcome, error, warnings in await leads.import_leads(
+            session, actor, job.id, rows
+        ):
             history.add_outcome(session, job, number, outcome, error, warnings=warnings)
             counts[outcome] += 1
             if warnings:
@@ -69,11 +76,9 @@ async def process_job(database, settings, job):
     except (DomainError, OSError) as error:
         async with transaction(database) as session:
             current = await history.get_log(session, job.id)
-            current.error_code = (
-                error.code if isinstance(error, DomainError) else "source_unavailable"
+            history.fail(
+                current, error.code if isinstance(error, DomainError) else "source_unavailable"
             )
-            current.status = "failed"
-            current.finished_at = dates.now()
         return
 
     async with database.sessions() as session:
@@ -89,6 +94,26 @@ async def process_job(database, settings, job):
         history.finish(await history.get_log(session, job.id))
 
 
+async def record_processing_error(database, job_id, error):
+    async with transaction(database) as session:
+        job = await history.get_log(session, job_id)
+        failures = job.retry_count + 1
+        job.retry_count = failures
+        if failures <= len(RETRY_DELAYS):
+            job.next_attempt_at = dates.now() + RETRY_DELAYS[failures - 1]
+        else:
+            history.fail(job, "processing_error")
+    # SQL exceptions can contain workbook values. Log the error type and import ID.
+    logger.warning(
+        "Lead import %s attempt %s errored (%s), next attempt at %s, status %s",
+        job_id,
+        failures,
+        type(error).__name__,
+        job.next_attempt_at,
+        job.status,
+    )
+
+
 async def run_one(database, settings):
     # Hold this transaction on its own connection. Chunk transactions can commit
     # independently, and a disconnect automatically releases the worker lock.
@@ -98,14 +123,27 @@ async def run_one(database, settings):
         job = await next_job(database)
         if job is None:
             return False
-        await process_job(database, settings, job)
+        try:
+            await process_job(database, settings, job)
+        except (OSError, DatabaseTimeout):
+            raise
+        except Exception as error:
+            if isinstance(error, DBAPIError) and error.connection_invalidated:
+                raise
+            await record_processing_error(database, job.id, error)
         return True
 
 
 async def run(database, settings, *, once=False):
     while True:
-        processed = await run_one(database, settings)
+        try:
+            processed = await run_one(database, settings)
+        except (DBAPIError, DatabaseTimeout, OSError) as error:
+            if once:
+                raise
+            logger.warning("Lead import queue unavailable (%s)", type(error).__name__)
+            processed = False
         if once:
             return
         if not processed:
-            await asyncio.sleep(2)
+            await asyncio.sleep(POLL_SECONDS)

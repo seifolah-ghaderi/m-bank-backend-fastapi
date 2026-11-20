@@ -39,14 +39,16 @@ def save_workbook(settings, import_id, content):
     return path
 
 
-async def create_log(session, settings, actor, request, kind, filename, content, rows, warnings):
+async def create_log(
+    session, settings, actor, request, kind, filename, content, total_rows, warnings
+):
     job = CrmImport(
         id=new_id(),
         kind=kind,
         status="queued" if kind == "leads" else "processing",
         file_name=Path(filename.replace("\\", "/")).name[:255],
         file_sha256=hashlib.sha256(content).hexdigest(),
-        total_rows=len(rows),
+        total_rows=total_rows,
         warnings=warnings,
         counts={},
         started_at=dates.now() if kind == "organization" else None,
@@ -80,6 +82,10 @@ def log_out(job):
         "created_at": dates.format_datetime(job.created_at),
         "started_at": dates.format_datetime(job.started_at) if job.started_at else None,
         "finished_at": dates.format_datetime(job.finished_at) if job.finished_at else None,
+        "retry_count": job.retry_count,
+        "next_attempt_at": (
+            dates.format_datetime(job.next_attempt_at) if job.next_attempt_at else None
+        ),
         "total_rows": job.total_rows,
         "processed_rows": created + unchanged + failed,
         "success_count": created + unchanged,
@@ -142,4 +148,11 @@ def finish(job):
     failed = job.counts.get("failed", 0)
     accepted = job.counts.get("created", 0) + job.counts.get("unchanged", 0)
     job.status = ("completed_with_errors" if accepted else "failed") if failed else "completed"
+    job.finished_at = dates.now()
+
+
+def fail(job, error_code):
+    job.status = "failed"
+    job.error_code = error_code
+    job.next_attempt_at = None
     job.finished_at = dates.now()

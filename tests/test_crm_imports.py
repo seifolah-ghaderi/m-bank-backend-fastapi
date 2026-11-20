@@ -1,3 +1,7 @@
+import asyncio
+import os
+import sys
+from collections import Counter
 from io import BytesIO
 
 import pytest
@@ -8,7 +12,7 @@ from app.core.db import Database
 from app.core.errors import DomainError
 from app.features.crm_imports import history, workbooks, worker
 from app.features.crm_imports.leads import import_lead, lead_rows
-from app.models import AuditLog, Branch, City, CrmImportRow, Lead, PosDevice
+from app.models import AuditLog, Branch, City, CrmImportRow, Lead, Occupation, PosDevice
 from app.models.base import new_id
 from tests.test_marketing_campaigns import create_campaign
 
@@ -43,7 +47,7 @@ async def test_import_history_original_and_errors(api, tmp_path):
             "organization",
             "synthetic.xlsx",
             content,
-            [2, 3],
+            2,
             [],
         )
         history.add_outcome(session, job, 2, "created")
@@ -106,6 +110,9 @@ def test_workbook_preflight(settings):
     sheet = workbooks.prepare(settings, "leads", "incoming.xlsx", valid)
     assert sheet.columns == ["city", "first_name", "last_name", "mobile", None]
     assert sheet.warnings == [{"code": "ignored_column", "column": "کد"}]
+    preflight = workbooks.prepare(settings, "leads", "incoming.xlsx", valid, count_only=True)
+    assert preflight.total_rows == 1 and preflight.rows == []
+    assert (preflight.columns, preflight.warnings) == (sheet.columns, sheet.warnings)
     bad = workbook(
         ["city", "first_name", "last_name", "mobile", "تلفن"],
         ["city", "First", "Last", "09120000001"],
@@ -125,8 +132,9 @@ def test_workbook_preflight(settings):
         ),
     ]
     for kind, content, code in cases:
-        with pytest.raises(DomainError, match=code):
-            workbooks.prepare(settings, kind, "incoming.xlsx", content)
+        for count_only in (False, True):
+            with pytest.raises(DomainError, match=code):
+                workbooks.prepare(settings, kind, "incoming.xlsx", content, count_only=count_only)
 
 
 async def test_organization_two_pass_with_partial_errors(api, tmp_path):
@@ -322,16 +330,17 @@ async def test_lead_worker_resumes_and_keeps_ordered_outcomes(api, tmp_path, mon
 
     async def interrupt(database, job_id, chunk):
         if chunk[0][0] == 4:
-            raise RuntimeError("simulated worker interruption")
+            raise asyncio.CancelledError
         await process_chunk(database, job_id, chunk)
 
     with monkeypatch.context() as stopping:
         stopping.setattr(worker, "process_chunk", interrupt)
-        with pytest.raises(RuntimeError, match="simulated worker interruption"):
+        with pytest.raises(asyncio.CancelledError):
             await worker.run_one(api.database, api.settings)
     detail = await api.client.get(f"{IMPORTS}/{job['id']}", headers=headers)
     assert detail.json()["status"] == "processing"
     assert detail.json()["processed_rows"] == 2
+    assert detail.json()["retry_count"] == 0
     assert await worker.run_one(api.database, api.settings) is True
     assert await worker.run_one(api.database, api.settings) is False
     detail = (await api.client.get(f"{IMPORTS}/{job['id']}", headers=headers)).json()
@@ -349,6 +358,55 @@ async def test_lead_worker_resumes_and_keeps_ordered_outcomes(api, tmp_path, mon
         result = (await session.scalars(select(Lead))).all()
         assert {lead.mobile for lead in result} == {"09120000011", "09120000013"}
         assert all(lead.city_id == api.city.id and lead.branch_id is None for lead in result)
+
+
+async def test_repeated_processing_failure_does_not_block_the_queue(api, tmp_path, monkeypatch):
+    api.settings.import_storage_dir = tmp_path
+    client, headers = api.client, api.headers["supervisor"]
+    jobs = []
+    for mobiles in (("09120000051", "09120000052"), ("09120000053",)):
+        rows = [(api.city.name, "First", "Lead", mobile) for mobile in mobiles]
+        content = workbook(workbooks.LEAD_REQUIRED, *rows)
+        response = await client.post(f"{IMPORTS}/leads", headers=headers, files=upload(content))
+        assert response.status_code == 202, response.text
+        jobs.append(response.json()["id"])
+    failing, ready = jobs
+    monkeypatch.setattr(worker, "CHUNK_SIZE", 1)
+    process_chunk = worker.process_chunk
+    failed_attempts = 0
+
+    async def fail_second_row(database, job_id, chunk):
+        nonlocal failed_attempts
+        if str(job_id) == failing and chunk[0][0] == 3:
+            failed_attempts += 1
+            raise RuntimeError("simulated processing error")
+        await process_chunk(database, job_id, chunk)
+
+    monkeypatch.setattr(worker, "process_chunk", fail_second_row)
+    assert await worker.run_one(api.database, api.settings)
+    awaiting_retry = (await client.get(f"{IMPORTS}/{failing}", headers=headers)).json()
+    assert awaiting_retry["status"] == "processing"
+    assert (awaiting_retry["retry_count"], awaiting_retry["processed_rows"]) == (1, 1)
+    assert awaiting_retry["next_attempt_at"] is not None
+    assert await worker.run_one(api.database, api.settings)
+    assert (await client.get(f"{IMPORTS}/{ready}", headers=headers)).json()["status"] == "completed"
+    assert not await worker.run_one(api.database, api.settings)
+
+    api.clock.advance(seconds=5)
+    assert await worker.run_one(api.database, api.settings)
+    assert not await worker.run_one(api.database, api.settings)
+    api.clock.advance(seconds=30)
+    assert await worker.run_one(api.database, api.settings)
+    assert not await worker.run_one(api.database, api.settings)
+    detail = (await client.get(f"{IMPORTS}/{failing}", headers=headers)).json()
+    assert detail["status"] == "failed"
+    assert detail["error_code"] == "processing_error"
+    assert detail["next_attempt_at"] is None
+    assert (detail["retry_count"], detail["processed_rows"], detail["created"]) == (3, 1, 1)
+    assert failed_attempts == 3
+    async with api.database.sessions() as session:
+        mobiles = set(await session.scalars(select(Lead.mobile)))
+        assert mobiles == {"09120000051", "09120000053"}
 
 
 async def test_manual_first_branch_assignment_guards(api):
@@ -417,6 +475,114 @@ async def runtime_database(api):
     finally:
         api.app.state.database = api.database
         await runtime.close()
+
+
+async def test_lead_import_batches_reference_queries_and_writes(
+    api, tmp_path, monkeypatch, runtime_database
+):
+    api.settings.import_storage_dir = tmp_path
+    monkeypatch.setattr(worker, "CHUNK_SIZE", 5)
+    async with api.database.sessions.begin() as session:
+        occupation = Occupation(name="Sample Occupation", name_key="sample occupation")
+        session.add(occupation)
+    headers = api.headers["supervisor"]
+    content = workbook(
+        (*workbooks.LEAD_REQUIRED, "occupation"),
+        *((api.city.name, "First", "Lead", f"091200001{i:02}", occupation.name) for i in range(12)),
+    )
+    response = await api.client.post(f"{IMPORTS}/leads", headers=headers, files=upload(content))
+    assert response.status_code == 202, response.text
+    counts = Counter()
+
+    def count_sql(conn, cursor, statement, parameters, context, executemany):
+        sql = statement.upper()
+        for fragment in ("FROM CITIES", "FROM OCCUPATIONS", "FROM LEADS", "INSERT INTO LEADS"):
+            if fragment in sql:
+                counts[fragment] += 1
+
+    engine = runtime_database.engine.sync_engine
+    event.listen(engine, "before_cursor_execute", count_sql)
+    try:
+        assert await worker.run_one(runtime_database, api.settings)
+    finally:
+        event.remove(engine, "before_cursor_execute", count_sql)
+    assert counts == {
+        "FROM CITIES": 3,
+        "FROM OCCUPATIONS": 3,
+        "FROM LEADS": 3,
+        "INSERT INTO LEADS": 3,
+    }
+    detail = await api.client.get(f"{IMPORTS}/{response.json()['id']}", headers=headers)
+    assert detail.json()["status"] == "completed"
+    assert detail.json()["created"] == 12
+    async with api.database.sessions() as session:
+        references = (await session.execute(select(Lead.city_id, Lead.occupation_id))).all()
+        assert references == [(api.city.id, occupation.id)] * 12
+
+
+async def test_lead_import_end_to_end_with_worker_process(api, tmp_path):
+    api.settings.import_storage_dir = tmp_path
+    client, headers = api.client, api.headers["supervisor"]
+    content = workbook(
+        workbooks.LEAD_REQUIRED,
+        (api.city.name, "First", "Lead", "09120000061"),
+        ("Unknown City", "Second", "Lead", "09120000062"),
+        (api.city.name, "Duplicate", "Lead", "09120000061"),
+    )
+    response = await client.post(f"{IMPORTS}/leads", headers=headers, files=upload(content))
+    assert response.status_code == 202, response.text
+    submitted = response.json()
+    assert submitted["status"] == "queued" and submitted["total_rows"] == 3
+    database_url = api.database.engine.url.render_as_string(hide_password=False)
+    process = await asyncio.create_subprocess_exec(
+        sys.executable,
+        "-m",
+        "app.cli",
+        "process-lead-imports",
+        env=os.environ
+        | {
+            "DATABASE_URL": database_url,
+            "MIGRATION_DATABASE_URL": database_url,
+            "IMPORT_STORAGE_DIR": str(tmp_path),
+            "ENVIRONMENT": "dev",
+            "SMS_MODE": "fixed",
+            "JWT_SECRET": api.settings.jwt_secret.get_secret_value(),
+            "CSRF_SECRET": api.settings.csrf_secret.get_secret_value(),
+            "SMS_DIGEST_SECRET": api.settings.sms_digest_secret.get_secret_value(),
+        },
+        stderr=asyncio.subprocess.PIPE,
+    )
+    try:
+        async with asyncio.timeout(20):
+            while True:
+                if process.returncode is not None:
+                    _, stderr = await process.communicate()
+                    pytest.fail(f"Lead worker exited early: {stderr.decode()}")
+                detail = await client.get(f"{IMPORTS}/{submitted['id']}", headers=headers)
+                assert detail.status_code == 200
+                job = detail.json()
+                if job["status"] in {"completed", "completed_with_errors", "failed"}:
+                    break
+                await asyncio.sleep(0.1)
+    finally:
+        if process.returncode is None:
+            process.terminate()
+        await process.communicate()
+
+    assert job["status"] == "completed_with_errors"
+    assert (job["processed_rows"], job["created"], job["failed"]) == (3, 1, 2)
+    response = await client.get(job["errors_url"], headers=headers)
+    assert [(row["row_number"], row["error_code"]) for row in response.json()["items"]] == [
+        (3, "unknown_city"),
+        (4, "duplicate_in_file"),
+    ]
+    response = await client.get("/api/v1/leads?unassigned=true", headers=headers)
+    (lead,) = response.json()["items"]
+    assert (lead["mobile"], lead["city_id"], lead["branch_id"]) == (
+        "09120000061",
+        str(api.city.id),
+        None,
+    )
 
 
 async def test_imported_organization_leads_and_campaign(api, tmp_path, runtime_database):

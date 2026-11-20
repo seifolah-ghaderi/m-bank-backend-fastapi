@@ -56,18 +56,18 @@ allow up to 50 MiB and 100,000 nonempty rows. The Nginx deployment allows a
 52 MiB request body only on the lead upload path to accommodate multipart
 overhead.
 
-Start the lead worker using the API's runtime database account and the same
-`IMPORT_STORAGE_DIR`. With the repository's Compose configuration run:
+`docker compose up --build -d` starts the `lead-worker` service with automatic
+restarts, the API's runtime database account, and the same import volume. Apply
+the database migrations as part of deployment. For a local Python environment,
+run `uv run python -m app.cli process-lead-imports` with the same `DATABASE_URL`
+and `IMPORT_STORAGE_DIR` as the API. Add `--once` to attempt at most one ready job.
 
-```sh
-docker compose run --rm api /app/.venv/bin/python -m app.cli process-lead-imports
-```
-
-For a local Python environment use
-`uv run python -m app.cli process-lead-imports`. Add `--once` to process
-at most one pending job. Run the worker under a process supervisor for
-continuous processing. After interruption, a restarted worker resumes from
-the last committed chunk while avoiding duplicate outcomes.
+The worker resumes from the last committed 500-row chunk after an interruption.
+After processing errors, it retries after 5 and 30 seconds and can process
+other jobs in the meantime. After a third processing error it reports `failed`
+with `error_code: processing_error` and retains committed leads and their row
+outcomes. The status response includes `retry_count` and `next_attempt_at`.
+Use the `lead-worker` logs to investigate failed or stalled jobs.
 
 ## Assign leads to branches
 

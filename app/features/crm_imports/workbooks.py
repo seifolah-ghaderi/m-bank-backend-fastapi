@@ -38,6 +38,7 @@ class WorkbookRows:
     columns: list
     rows: list
     warnings: list
+    total_rows: int
 
     def values(self, cells, fields=None):
         values = {}
@@ -60,13 +61,16 @@ def max_bytes(settings, kind):
     return (LEAD_MAX_MB if kind == "leads" else settings.import_max_mb) * 1024 * 1024
 
 
-def prepare(settings, kind, filename, content):
+def prepare(settings, kind, filename, content, *, count_only=False):
     if len(content) > max_bytes(settings, kind):
         raise DomainError(413, "file_too_large")
     if not filename or not filename.lower().endswith(".xlsx"):
         raise DomainError(422, "invalid_file")
     is_leads = kind == "leads"
-    headers, rows = read_xlsx(content, LEAD_MAX_ROWS if is_leads else settings.import_max_rows)
+    headers, data = read_xlsx(
+        content, LEAD_MAX_ROWS if is_leads else settings.import_max_rows, count_only=count_only
+    )
+    rows, total_rows = ([], data) if count_only else (data, len(data))
     canonical = LEAD_COLUMNS if is_leads else ORGANIZATION_COLUMNS
     mapping = {field: field for field in canonical}
     if is_leads:
@@ -89,9 +93,9 @@ def prepare(settings, kind, filename, content):
     missing = sorted(set(required) - used)
     if missing:
         raise DomainError(422, "missing_columns", details={"columns": missing})
-    if not rows:
+    if not total_rows:
         raise DomainError(422, "empty_workbook")
-    return WorkbookRows(columns, rows, warnings)
+    return WorkbookRows(columns, rows, warnings, total_rows)
 
 
 async def read_upload(file, settings, kind):
@@ -99,7 +103,9 @@ async def read_upload(file, settings, kind):
         content = await file.read(max_bytes(settings, kind) + 1)
     finally:
         await file.close()
-    sheet = await run_in_threadpool(prepare, settings, kind, file.filename, content)
+    sheet = await run_in_threadpool(
+        prepare, settings, kind, file.filename, content, count_only=kind == "leads"
+    )
     return content, sheet
 
 

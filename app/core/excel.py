@@ -73,8 +73,8 @@ def identifier_cell(cell):
     return value.strip()
 
 
-def read_xlsx(content, max_rows):
-    """Bound ZIP expansion before openpyxl; return detached cell values/formats."""
+def read_xlsx(content, max_rows, *, count_only=False):
+    """Validate an XLSX and return headers plus detached rows or a row count."""
     try:
         if not content.startswith(b"PK\x03\x04"):
             raise ValueError("invalid_file")
@@ -84,9 +84,13 @@ def read_xlsx(content, max_rows):
                 raise ValueError("invalid_file")
             for member in info:
                 if member.filename.endswith(".xml"):
-                    data = archive.read(member)
-                    if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
-                        raise ValueError("invalid_file")
+                    with archive.open(member) as part:
+                        tail = b""
+                        while block := part.read(65536):
+                            data = tail + block
+                            if b"<!DOCTYPE" in data or b"<!ENTITY" in data:
+                                raise ValueError("invalid_file")
+                            tail = data[-8:]
         workbook = load_workbook(BytesIO(content), read_only=True, data_only=True, keep_links=False)
         try:
             sheet = next((s for s in workbook if s.sheet_state == "visible"), None)
@@ -96,26 +100,31 @@ def read_xlsx(content, max_rows):
             # already be floats. Keep date cells decoded by its date styles,
             # but use exact XML decimals for money/count/identifier cells.
             numeric = {}
-            with ZipFile(BytesIO(content)) as archive:
-                with archive.open(sheet._worksheet_path) as part:
-                    for _, node in ET.iterparse(part, events=("end",)):
-                        if node.tag.endswith("}c") and node.get("t", "n") == "n":
-                            value = node.find("{*}v")
-                            if value is not None and value.text is not None:
-                                numeric[node.get("r")] = value.text
-                            node.clear()
+            if not count_only:
+                with ZipFile(BytesIO(content)) as archive:
+                    with archive.open(sheet._worksheet_path) as part:
+                        for _, node in ET.iterparse(part, events=("end",)):
+                            if node.tag.endswith("}c") and node.get("t", "n") == "n":
+                                value = node.find("{*}v")
+                                if value is not None and value.text is not None:
+                                    numeric[node.get("r")] = value.text
+                                node.clear()
             rows = sheet.iter_rows()
             headers = next(rows, ())
             names = [str(c.value or "").strip() for c in headers]
             result = []
+            count = 0
             for row_number, row in enumerate(rows, start=2):
                 if all(
                     c.value is None or (isinstance(c.value, str) and not c.value.strip())
                     for c in row
                 ):
                     continue
-                if len(result) >= max_rows:
+                count += 1
+                if count > max_rows:
                     raise DomainError(422, "too_many_rows")
+                if count_only:
+                    continue
                 values = [
                     (
                         Decimal(numeric[c.coordinate])
@@ -127,7 +136,7 @@ def read_xlsx(content, max_rows):
                     for c in row
                 ]
                 result.append((row_number, values))
-            return names, result
+            return names, count if count_only else result
         finally:
             workbook.close()
     except DomainError:

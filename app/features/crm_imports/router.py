@@ -103,7 +103,7 @@ async def upload_organization(
         "organization",
         file.filename,
         content,
-        sheet.rows,
+        sheet.total_rows,
         sheet.warnings,
     )
     await organization.process(session, user, request, job, sheet)
@@ -125,7 +125,7 @@ async def upload_leads(
         "leads",
         file.filename,
         content,
-        sheet.rows,
+        sheet.total_rows,
         sheet.warnings,
     )
     return history.log_out(job)
