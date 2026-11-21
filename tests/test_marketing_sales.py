@@ -38,15 +38,15 @@ async def product(api, code, score=5):
     return result.json()["id"]
 
 
-async def start_visit(api, lead, *, cross_sell=False, repeat=False):
+async def start_visit(api, lead, *, cross_sell=False, repeat=False, employee="employee"):
     campaign = await create_campaign(api, [lead], include_customers=cross_sell, activate=True)
-    (work,) = await work_urls(api, campaign)
-    picked = await api.client.post(work + "/pick", headers=api.headers["employee"])
+    (work,) = await work_urls(api, campaign, employee)
+    picked = await api.client.post(work + "/pick", headers=api.headers[employee])
     assert picked.status_code == 200, picked.text
-    visit = await add_attempt(api, work)
+    visit = await add_attempt(api, work, employee)
     assert visit.status_code == 201, visit.text
     if repeat:
-        visit = await add_attempt(api, work, description="Repeat contact")
+        visit = await add_attempt(api, work, employee, description="Repeat contact")
         assert visit.json()["visit_count"] == 2
     return campaign, work, visit.json()["id"]
 
@@ -184,7 +184,15 @@ async def test_end_to_end_partial_batch_cross_sell_and_customer_scope(api):
     assert (await schedule(api, 15)).status_code == 201
     assert (await schedule(api, 15)).status_code == 409
     assert (await schedule(api, 0)).status_code == 422
-    assert (await schedule(api, 45, requires_approval=True)).status_code == 201
+    legacy = await schedule(api, 45, requires_approval=True)
+    assert legacy.status_code == 201, legacy.text
+    assert legacy.json()["requires_approval"] is False
+    patched = await api.client.patch(
+        f"/api/v1/retention-schedules/{legacy.json()['id']}",
+        headers=api.headers["supervisor"],
+        json={"requires_approval": True},
+    )
+    assert patched.status_code == 200 and patched.json()["requires_approval"] is False
     assert (await schedule(api, 90, is_active=False)).status_code == 201
     products = [await product(api, f"P{n}", score=n) for n in range(1, 5)]
     lead = await create_lead(api)
@@ -223,10 +231,17 @@ async def test_end_to_end_partial_batch_cross_sell_and_customer_scope(api):
     assert len(detail["products"]) == 3
     assert "account_number" not in detail["products"][0]
     assert "proof_text" not in detail["sales"][0]
-    assert [item["status"] for item in detail["retention_tasks"]] == ["open", "pending_approval"]
-    assert detail["retention_tasks"][0]["due_date"] == dates.format_date(
-        dates.today() + timedelta(days=15)
-    )
+    assert [
+        (item["status"], item["assigned_to"], item["due_date"])
+        for item in detail["retention_tasks"]
+    ] == [
+        (
+            "open",
+            str(api.users["employee"].id),
+            dates.format_date(dates.today() + timedelta(days=n)),
+        )
+        for n in (15, 45)
+    ]
     assert (await api.client.get(detail_url, headers=api.headers["employee"])).status_code == 403
     listing = await api.client.get(
         "/api/v1/customers",
@@ -356,6 +371,16 @@ async def test_campaign_and_approval_with_runtime_privileges(api):
         revision = (await evidence(api))[sale]["id"]
         decision = await decide(api, sale, revision)
         assert decision.status_code == 200, decision.text
+        tasks = await api.client.get("/api/v1/retention-tasks", headers=api.headers["employee"])
+        assert tasks.status_code == 200, tasks.text
+        (task,) = tasks.json()["items"]
+        completed = await api.client.post(
+            f"/api/v1/retention-tasks/{task['id']}/complete",
+            headers=api.headers["employee"],
+            json={"visit_date": dates.format_date(dates.today()), "result": "Reached"},
+        )
+        assert completed.status_code == 200, completed.text
+        assert completed.json()["status"] == "completed"
     finally:
         api.app.state.database = api.database
         await runtime.close()

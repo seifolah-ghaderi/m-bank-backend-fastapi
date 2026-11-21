@@ -284,11 +284,14 @@ class RetentionTask(BaseMixin, Base):
     assigned_to: Mapped[UUID] = mapped_column(ForeignKey("users.id"))
     due_date: Mapped[date]
     status: Mapped[str] = mapped_column(String(20))
+    visit_date: Mapped[date | None]
+    result: Mapped[str | None] = mapped_column(String(30))
+    notes: Mapped[str | None] = mapped_column(Text)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_by: Mapped[UUID | None] = mapped_column(ForeignKey("users.id"))
     __table_args__ = (
         UniqueConstraint("customer_id", "retention_schedule_id"),
-        CheckConstraint(
-            "status IN ('pending_approval','open','completed','cancelled')", name="status"
-        ),
+        CheckConstraint("status IN ('open','completed','cancelled')", name="status"),
         Index("ix_retention_tasks_assignment", "assigned_to", "status", "due_date"),
     )
 

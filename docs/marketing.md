@@ -100,13 +100,32 @@ Supervisors and Branch Managers can GET `/customers` with `branch_id`,
 includes held products, sale summaries, campaign visits and generated
 retention tasks. Product account references in this registry are visible to
 Supervisors. PATCH `/customers/{id}` to correct name, phone, address or city.
-Employees access profile data through the sales form for assigned work.
+Employees access the customer details needed for assigned work through the
+sales form or retention task detail.
 
 Supervisors manage `/retention-schedules` with GET, POST and item PATCH.
 Each schedule takes a label, positive `days_after_conversion`, and optional
-`requires_approval` and `is_active` flags. First approval creates the
-customer's tasks from active schedules. Approval-required schedules start as
-`pending_approval`. Others start as `open`. Due dates are calendar days
-from the first approval in the business timezone. Further product approvals
-leave those tasks as recorded.
+`is_active`. The API accepts the legacy `requires_approval` boolean and returns
+`false` for it.
 
+## Retention tasks
+
+First sale approval creates one open task per active schedule and assigns each
+task to the employee who acquired the customer. Each due date adds the
+schedule's calendar-day offset to the conversion date in the business timezone.
+Subsequent approvals generate no additional tasks. The migration opens tasks
+previously awaiting approval and preserves their IDs, assignees, and due dates.
+
+- `GET /retention-tasks` lists paginated tasks by due date. Supervisors see all
+  tasks, and Branch Managers see only their branch's tasks. Employees see
+  their own open tasks by default and use `?status=completed` for their history.
+  Supervisors and Branch Managers can filter by `open`, `completed`, or `cancelled`.
+- `GET /retention-tasks/{task_id}` shows the task and the customer's name,
+  phone, address, and city ID within the same role scope. Out-of-scope task
+  IDs return 404.
+- `POST /retention-tasks/{task_id}/complete` is the assigned employee's only
+  task action. Send a Jalali `visit_date` on or before the current business
+  date, a `result` of 1–30 characters after trimming, and optional `notes`.
+  Completion records the server timestamp and employee, writes an audit
+  event, and moves the task to completed history. A repeated completion
+  returns 409. Supervisor and Branch Manager task access is read-only.
